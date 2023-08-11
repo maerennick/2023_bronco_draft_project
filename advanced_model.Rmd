@@ -1,0 +1,201 @@
+---
+title: "advanced_model"
+author: "Mae Rennick"
+date: "2023-08-11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(tidyverse)
+library(randomForest)
+library(tidyverse)
+library(janitor)
+library(nflreadr)
+library(caret)
+library(e1071)
+library(mice) #multiple imputation
+library(VIM)  # for missing data patterns visualization
+library(corrplot)  # for correlation plot
+library(kernlab)
+library(mice)
+
+
+```
+
+```{r}
+
+### read in data and data cleaning 
+
+nfl_combine <- nflreadr::load_combine()
+str(nfl_combine,  give.attr = F)
+
+
+convert_height_to_decimal <- function(ht) {
+  components <- strsplit(ht, "-")[[1]]
+  feet <- as.numeric(components[1])
+  inches <- as.numeric(components[2])
+  decimal_feet <- feet + inches / 12
+  return(decimal_feet)
+}
+
+nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal)
+
+features <- c("pos", "decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "season", "pfr_id") ## relevant features for model training
+
+wr_combine_data <- nfl_combine %>%
+  select(features) %>%  ## only include relevant features
+  rename(ht= decimal_height) %>% 
+  filter(pos== "WR") %>% 
+  filter(pfr_id!="NA")
+
+
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022)%>% 
+  filter(position== "WR") %>% 
+  filter(pfr_player_id!="NA") %>% 
+  rename(pfr_id = pfr_player_id)
+
+str(nfl_snap_counts, give.attr = F)
+  
+
+
+```
+
+## CLUSTER ANALYSIS 
+
+
+```{r}
+
+### NAs removed
+
+clean_model_data<- wr_combine_data 
+
+
+### coerced data (multiple) You need to have competed in at least three categories to contribute to the model (why?)
+
+
+
+```
+
+
+### Handling Missing Values
+
+Multiple Imputation: Generate multiple imputed datasets, build models on each, and combine the results.
+- moderate to high amount of missing data.
+- missing data mechanism is not ignorable (MAR or MNAR).
+
+```{r}
+
+
+data<- clean_model_data %>% 
+  filter(!(is.na(forty) & is.na(bench) & is.na(vertical) &
+           is.na(broad_jump) & is.na(cone) & is.na(shuttle)))### if they are missing all values, do not include them in the model (can't predict performance solely based on height and weight)
+
+# Set the number of imputations
+num_imputations <- 5
+
+# Create an imputation object using the 'mice' function
+imputed_data <- mice(data[, c("pfr_id", "season", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+
+# Perform the imputation
+imputed_data <- complete(imputed_data)
+
+## Evaluate imputation 
+
+# Calculate missing data proportions for each variable
+missing_proportions <- colMeans(is.na(data))
+
+# Calculate correlations (only for numeric columns)
+numeric_data <- data[, sapply(data, is.numeric)] %>% 
+  drop_na() ## get rid of NA values for comparison
+correlation_original <- cor(numeric_data, use = "complete.obs")
+correlation_imputed <- cor(imputed_data[, sapply(imputed_data, is.numeric)])
+
+# Plot correlations
+corrplot(correlation_original, method = "color", title = "Correlation Matrix (Original Data)")
+corrplot(correlation_imputed, method = "color", title = "Correlation Matrix (Imputed Data)")
+
+### result: simillar correlations
+
+#Compare means, medians, and standard deviations
+original_summary <- apply(numeric_data, 2, function(x) c(mean(x), median(x), sd(x)))
+imputed_summary <- apply(imputed_data[, sapply(imputed_data, is.numeric)], 2, function(x) c(mean(x), median(x), sd(x)))
+
+## turn values into a dataframe for visulatization
+summary_df <- data.frame(
+  Variable = rep(names(numeric_data), each = 3),
+  Measure = rep(c("Mean", "Median", "Standard Deviation"), times = ncol(numeric_data)),
+  Value = c(original_summary, imputed_summary),
+  Data = rep(c("Original", "Imputed"), each = length(names(numeric_data)) * 3)
+)
+
+ggplot(summary_df, aes(x = Variable, y = Value, fill = Measure)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_grid(Data ~ Measure, scales = "free_y", switch = "y") +
+  labs(title = "Comparison of Means, Medians, and Standard Deviations",
+       y = "Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
+```{r}
+
+
+data<-imputed_data
+
+library(GGally)
+
+# Select relevant columns
+selected_cols <- c("pfr_id", "season", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")
+data_subset <- data[selected_cols]
+
+# Filter data for the 2023 season
+data_2023 <- data_subset %>%
+  filter(season == 2023)
+
+# Standardize the data
+data_scaled <- scale(data_subset[, !colnames(data_subset) %in% c("pfr_id", "season")])
+
+# Apply K-Means clustering
+num_clusters <- 3  # Replace with the determined number of clusters
+cluster_result <- kmeans(data_scaled, centers = num_clusters, nstart = 25)
+
+# Add cluster assignments to the original data
+data_with_clusters <- data_subset %>%
+  mutate(cluster = cluster_result$cluster)
+
+# Scatter plot matrix (pair plot)
+pairs(data_with_clusters[, -1], pch = 20, col = cluster_result$cluster)
+points(data_2023[, -1], pch = 20, col = "red")
+
+
+```
+
+
+```{r}
+# Split the data into training and testing sets
+
+library(cluster)  # For clustering algorithms
+
+#Prepare Data for Clustering
+clustering_data_2023 <- imputed_data %>%
+  filter(season == 2023) %>% 
+  select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle)
+
+#Perform Clustering (K-Means)
+set.seed(18)
+num_clusters <- 3  # Number of clusters to create
+kmeans_model <- kmeans(clustering_data_2023, centers = num_clusters)
+
+clustering_data_2023$cluster <- kmeans_model$cluster
+
+```
+

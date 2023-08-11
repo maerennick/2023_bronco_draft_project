@@ -1,0 +1,198 @@
+---
+title: "Wide Receiver Production -- 2023 Combine"
+author: "Mae Rennick"
+date: "2023-08-11"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+1. Data Collection: We will gather data from the NFL Scouting Combine using the nflreadr package.
+
+2. Data Pre-processing: We will clean and preprocess the collected data to prepare it for model training.
+
+3. Model Selection: We will choose a suitable machine learning algorithm to build our prediction model.
+
+4. Model Training: We will train our selected model using historical data from previous NFL seasons.
+
+5. Model Evaluation: We will evaluate the performance of our model using appropriate evaluation metrics.
+
+6. Prediction for 2023 Draft Class: We will use the trained model to make predictions for the wide receivers in the 2023 NFL Draft class.
+
+
+```{r setup, include=TRUE, warning= FALSE, message= FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE, message= FALSE)
+
+library(tidyverse)
+library(janitor)
+library(nflreadr)
+library(caret)
+library(e1071)
+library(mice) #multiple imputation
+library(VIM)  # for missing data patterns visualization
+library(corrplot)  # for correlation plot
+library(kernlab)
+
+```
+
+
+```{r}
+### load in the data
+
+combine_data <- nfl_combine <- nflreadr::load_combine() %>% 
+  filter(!is.na(pfr_id)) ## remove rows where pfr_id is missing
+str(nfl_combine,  give.attr = F)
+
+
+features <- c("decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "draft_year") ## relevant features for model training
+
+data <- combine_data %>%
+  filter(!is.na(draft_year)) %>% 
+  select(features) ## only include relevant features
+
+convert_height_to_decimal <- function(ht) {
+  components <- strsplit(ht, "-")[[1]]
+  feet <- as.numeric(components[1])
+  inches <- as.numeric(components[2])
+  decimal_feet <- feet + inches / 12
+  return(decimal_feet)
+}
+
+# Apply the function to the 'height' column and create a new column 'decimal_height'
+data$decimal_height <- sapply(data$ht, convert_height_to_decimal)
+
+data<- data %>%
+  filter(position== "WR") %>% ## position has to be wide receiver
+  sapply(data$ht, convert_height_to_decimal)
+  select(-ht) %>% 
+  rename(ht= decimal_height)
+
+
+
+```
+
+
+
+### Handling Missing Values
+
+Multiple Imputation: Generate multiple imputed datasets, build models on each, and combine the results.
+- moderate to high amount of missing data.
+- missing data mechanism is not ignorable (MAR or MNAR).
+
+```{r}
+
+
+data<- data %>% 
+  filter(!(is.na(forty) & is.na(bench) & is.na(vertical) &
+           is.na(broad_jump) & is.na(cone) & is.na(shuttle)))### if they are missing all values, do not include them in the model (can't predict performance solely based on height and weight)
+
+# Set the number of imputations
+num_imputations <- 5
+
+# Create an imputation object using the 'mice' function
+imputed_data <- mice(data[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+
+# Perform the imputation
+imputed_data <- complete(imputed_data)
+
+## Evaluate imputation 
+
+# Calculate missing data proportions for each variable
+missing_proportions <- colMeans(is.na(data))
+
+# Calculate correlations (only for numeric columns)
+numeric_data <- data[, sapply(data, is.numeric)] %>% 
+  drop_na() %>%  ## get rid of NA values for comparison
+  select(-draft_year)
+correlation_original <- cor(numeric_data, use = "complete.obs")
+correlation_imputed <- cor(imputed_data[, sapply(imputed_data, is.numeric)])
+
+# Plot correlations
+corrplot(correlation_original, method = "color", title = "Correlation Matrix (Original Data)")
+corrplot(correlation_imputed, method = "color", title = "Correlation Matrix (Imputed Data)")
+
+### result: simillar correlations
+
+#Compare means, medians, and standard deviations
+original_summary <- apply(numeric_data, 2, function(x) c(mean(x), median(x), sd(x)))
+imputed_summary <- apply(imputed_data[, sapply(imputed_data, is.numeric)], 2, function(x) c(mean(x), median(x), sd(x)))
+
+## turn values into a dataframe for visulatization
+summary_df <- data.frame(
+  Variable = rep(names(numeric_data), each = 3),
+  Measure = rep(c("Mean", "Median", "Standard Deviation"), times = ncol(numeric_data)),
+  Value = c(original_summary, imputed_summary),
+  Data = rep(c("Original", "Imputed"), each = length(names(numeric_data)) * 3)
+)
+
+ggplot(summary_df, aes(x = Variable, y = Value, fill = Measure)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_grid(Data ~ Measure, scales = "free_y", switch = "y") +
+  labs(title = "Comparison of Means, Medians, and Standard Deviations",
+       y = "Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
+```{r}
+
+## build model
+
+set.seed(18) ## peyton's number :) 
+
+model <- train(data = imputed_data, wt ~ ., method = "svmRadial", trControl = trainControl(method = "cv"))
+
+```
+
+
+```{r}
+
+## model training
+trained_model <- svm(wt ~ ., data = data, kernel = "radial")
+
+
+```
+
+Cross-Validation and Evaluation: Implement proper cross-validation techniques to estimate the performance of the model accurately. Use appropriate evaluation metrics for regression tasks, such as Mean Squared Error (MSE) or Root Mean Squared Error (RMSE), to assess the model's predictive capability.
+
+(also helps us validate imputation)
+
+
+```{r}
+## predictions
+
+combine_data_2023 <- nflreadr::load_combine() %>% 
+  filter(!is.na(pfr_id)) %>%  ## remove rows where pfr_id is missing
+  filter(season == 2023)
+str(nfl_combine,  give.attr = F)
+
+data_2023 <- combine_data_2023 %>% 
+  select(features) 
+
+data_2023$decimal_height <- sapply(data_2023$ht, convert_height_to_decimal)
+
+data_2023<- data_2023 %>% 
+  select(-ht) %>% 
+  rename(ht= decimal_height)
+  
+# Predict wide receiver production for the 2023 draft class
+predictions_2023 = model.predict(combine_2023[features])
+
+# Create a dataframe for predictions
+predictions_df = pd.DataFrame({
+    'pfr_id': combine_2023['pfr_id'],
+    'prediction': predictions_2023
+})
+
+# Sort the predictions dataframe by predicted production in descending order
+sorted_predictions_df = predictions_df.sort_values(by='prediction', ascending=False)
+
+```
+
+
+Ensemble Methods: Consider using ensemble methods like Random Forests, Gradient Boosting, or Stacking to combine the predictions of multiple models for improved accuracy.
