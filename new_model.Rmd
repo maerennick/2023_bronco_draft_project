@@ -1,0 +1,87 @@
+---
+title: "new_model"
+author: "Mae Rennick"
+date: "2023-08-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+
+nfl_combine <- nflreadr::load_combine()
+str(nfl_combine,  give.attr = F)
+
+
+convert_height_to_decimal <- function(ht) {
+  components <- strsplit(ht, "-")[[1]]
+  feet <- as.numeric(components[1])
+  inches <- as.numeric(components[2])
+  decimal_feet <- feet + inches / 12
+  return(decimal_feet)
+}
+
+nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal)
+
+features <- c("pos", "decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "season", "pfr_id") ## relevant features for model training
+
+wr_combine_data <- nfl_combine %>%
+  select(features) %>%  ## only include relevant features
+  rename(ht= decimal_height) %>% 
+  filter(pos== "WR") %>% 
+  filter(pfr_id!="NA")
+
+
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022)%>% 
+  filter(position== "WR") %>% 
+  filter(pfr_player_id!="NA") %>% 
+  rename(pfr_id = pfr_player_id)
+
+str(nfl_snap_counts, give.attr = F)
+
+
+merged_df <- nfl_snap_counts %>%
+  left_join(wr_combine_data, by = "pfr_id")
+
+
+```
+
+
+```{r}
+# Select relevant features for modeling
+features <- c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle",
+              "offense_snaps", "offense_pct", "defense_snaps", "defense_pct", "st_snaps", "st_pct")
+
+# Remove rows with missing values
+merged_data <- merged_df[complete.cases(merged_df[features]), ]
+
+# Split data into training and validation sets
+set.seed(123)
+train_index <- createDataPartition(merged_data$offense_snaps, p = 0.8, list = FALSE)
+train_data <- merged_data[train_index, ]
+val_data <- merged_data[-train_index, ]
+
+train_data$pos <- as.factor(train_data$pos)
+
+encoded_vars <- model.matrix(~ . - 1, data = train_data)
+
+model <- lm(offense_snaps ~ ., data = train_data)
+
+
+# Make predictions for the 2023 draft class
+draft_2023 <- subset(merged_data, season == 2023)
+draft_2023_predictions <- predict(model, newdata = draft_2023)
+
+# Rank and compare prospects for 2023
+draft_2023$predicted_production <- draft_2023_predictions
+sorted_prospects <- draft_2023 %>%
+  arrange(desc(predicted_production))
+
+# Print the ranked list of prospects
+print(sorted_prospects)
+
+```
+

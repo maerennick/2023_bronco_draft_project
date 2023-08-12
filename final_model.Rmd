@@ -1,0 +1,418 @@
+---
+title: "model_attempt 3"
+author: "Mae Rennick"
+date: "2023-08-12"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(randomForest)
+library(tidyverse)
+library(janitor)
+library(nflreadr)
+library(mice)
+
+```
+
+
+
+## Player Production 
+
+The amount of times a player is on the field is important to see how much they play. Offensive percentage determines the percent of offensive snaps taken. We assume that a higher offensive percentage is demonstrative of player production. 
+
+In other analyses: performance criteria include several variables including: draft order; 3 years each of salary received and games played; and position-specific data; stats from the preceding year (college stats).
+
+This investigation focuses on the correlation between athletic attributes of players and overall production (offensive percentage). Notably, previous studies have found inconsistent evidence to link combine tests and professional football performance (Kuzmits and Adams 2008) which is likely because athleticism is only one aspect of the game. However, by using athletic attributes as predictor variables in a model in which performance outcomes are known, we may be able to discern collective attributes that characterize players who perform well. 
+
+
+#### Data import/ cleaning steps
+
+1. import both datasets( combine data and snap count data)
+2. convert combine stats to numeric values
+3. pick features of combine dataset to include in the model. According to Meil et al. 2018, success in the NFL were significantly correlated (p < .05) with several physical ability measures:
+ - forty-yard dash (forty)
+ - vertical jump height (vertical)
+ - twenty-yard shuttle (shuttle)
+ - 3-cone drill(cone)
+ 
+ We additionally included: 
+  - height (ht)
+  - weight (wt)
+  - season (season)
+  - bench press (bench)
+  - broad jump (broad_jump)
+ 
+4. find the average offensive percentage for each player per season
+
+
+##### Decisions
+
+- remove defensive snaps and special teams snaps (assuming that the majority of WR production happens on offense)
+- find average offense_pct per season (note: this does not take into account key features including: injuries, length of season, how many seasons a player has played in the NFL, and opposing team)
+
+
+
+```{r}
+
+nfl_combine <- nflreadr::load_combine()
+str(nfl_combine,  give.attr = F)
+
+
+convert_height_to_decimal <- function(ht) {
+  components <- strsplit(ht, "-")[[1]]
+  feet <- as.numeric(components[1])
+  inches <- as.numeric(components[2])
+  decimal_feet <- feet + inches / 12
+  return(decimal_feet)
+}
+
+nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal)
+
+features <- c("pos", "decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "season", "pfr_id") ## relevant features for model training
+
+wr_combine_data <- nfl_combine %>%
+  select(features) %>%  ## only include relevant features
+  rename(ht= decimal_height) %>% 
+  filter(pos== "WR") %>% 
+  filter(pfr_id!="NA")
+
+
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022)%>% 
+  filter(position== "WR") %>% 
+  filter(pfr_player_id!="NA") %>% 
+  rename(pfr_id = pfr_player_id)
+
+nfl_pct_offense_avg<- nfl_snap_counts %>% 
+  group_by(pfr_id, season) %>% 
+  summarise(avg_pct_offense = mean(offense_pct))
+
+str(nfl_snap_counts, give.attr = F)
+
+
+merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
+
+merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") %>% 
+  arrange(pfr_id, season.y) %>%  # Sort the data within each group
+  group_by(pfr_id) %>%
+  mutate(
+    season_rank = dense_rank(desc(season.y)),  # Assign ranks to seasons
+    season_number = case_when(
+      is.na(season.y) ~ "1",  # Handle NA values
+      season_rank == 1 ~ "1",
+      season_rank == 2 ~ "2",
+      TRUE ~ paste0(season_rank)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-season_rank)   # Remove the temporary rank column
+
+
+
+```
+
+
+### Data Exploration
+
+1. On average, how does player production change throughout their career (by season)?
+
+```{r}
+
+ggplot(merged_avg, aes(x=as.numeric(season_number), y= avg_pct_offense))+
+  geom_point(color ="#002144")+
+  geom_smooth(color = "#FA4E13")+
+  theme_minimal()
+
+### visually: it looks like players who make it to their 7th+ season are more likely to have a higher offensive_pct. This may influence model outcomes 
+
+
+```
+
+2. What does average player production look like in the first season? 
+
+```{r}
+
+first_season<- merged_avg %>% 
+  filter(season_number== 1)
+
+ggplot(merged_avg, aes(x=avg_pct_offense))+
+  geom_histogram(fill = "#002144")+
+  theme_minimal()
+
+## quite a few players getting a lot of playing time in their first season
+
+```
+
+
+3. What does average player production look like average across all seasons by player?
+
+```{r}
+
+combined_seasons<- merged_avg %>% 
+  group_by(pfr_id) %>% 
+  summarise(avg_pct_offense = mean(avg_pct_offense))
+
+ggplot(combined_seasons, aes(x=avg_pct_offense))+
+  geom_histogram(fill = "#FA4E13")+
+  theme_minimal()
+
+## normal-ish distribution with a slight right skew
+
+```
+
+
+4. 2023 combine class 
+
+```{r}
+
+merged_avg_2023<- merged_avg %>% 
+  filter(season.x == 2023)
+
+summary <- merged_avg_2023 %>%
+  filter(!is.na(ht) & !is.na(wt) & !is.na(forty) & !is.na(vertical) &
+           !is.na(bench) & !is.na(broad_jump) & !is.na(cone) & !is.na(shuttle)) %>%
+  summarise(total_rows = n())
+
+
+```
+
+
+### Missing Values
+
+Only two players from the 2023 combine competed in all events.
+
+#### Decisions
+
+- Players must have completed at least 3 different tests to be included in this analysis (combine rules)
+
+Multiple Imputation: Generate multiple imputed datasets, build models on each, and combine the results.
+- moderate to high amount of missing data.
+- missing data mechanism is not ignorable (MAR or MNAR).
+
+
+```{r}
+
+data<- merged_avg %>%
+  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3)  ## must have values for at least three events
+
+# Set the number of imputations
+num_imputations <- 10
+
+# Create an imputation object using the 'mice' function
+imputed_data <- mice(data[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+
+# Perform the imputation
+imputed_data <- complete(imputed_data)
+
+## Evaluate imputation 
+
+# Calculate missing data proportions for each variable
+missing_proportions <- colMeans(is.na(data))
+
+# Calculate correlations (only for numeric columns)
+numeric_data <- data[, sapply(data, is.numeric)] %>% 
+  drop_na() %>% ## get rid of NA values for comparison
+  select(season.x, ht, wt, forty, bench, vertical, broad_jump, cone, shuttle)
+
+correlation_original <- cor(numeric_data, use = "complete.obs")
+correlation_imputed <- cor(imputed_data[, sapply(imputed_data, is.numeric)])
+
+# Plot correlations
+corrplot(correlation_original, method = "color", title = "Correlation Matrix (Original Data)")
+corrplot(correlation_imputed, method = "color", title = "Correlation Matrix (Imputed Data)")
+
+### result: slight shift, but overall similar correlations
+
+#Compare means, medians, and standard deviations
+original_summary <- apply(numeric_data, 2, function(x) c(mean(x), median(x), sd(x)))
+imputed_summary <- apply(imputed_data[, sapply(imputed_data, is.numeric)], 2, function(x) c(mean(x), median(x), sd(x)))
+
+## turn values into a dataframe for visulatization
+summary_df <- data.frame(
+  Variable = rep(names(numeric_data), each = 3),
+  Measure = rep(c("Mean", "Median", "Standard Deviation"), times = ncol(numeric_data)),
+  Value = c(original_summary, imputed_summary),
+  Data = rep(c("Original", "Imputed"), each = length(names(numeric_data)) * 3)
+)
+
+ggplot(summary_df, aes(x = Variable, y = Value, fill = Measure)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_grid(Data ~ Measure, scales = "free_y", switch = "y") +
+  labs(title = "Comparison of Means, Medians, and Standard Deviations",
+       y = "Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+### Model Building and verfication 
+
+
+use BMI instead of height and weight? create a variable called "BMI" (Body Mass Index) by dividing weight (kg) by the square of height (meters). Then, you can include this composite variable in your model and assess its importance like any other predictor.
+
+```{r}
+
+## Bind imputed data with snap data 
+
+merged_avg_imputed<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id") %>% 
+  arrange(pfr_id, season) %>%  # Sort the data within each group
+  group_by(pfr_id) %>%
+  mutate(
+    season_rank = dense_rank(desc(season)),  # Assign ranks to seasons
+    season_number = case_when(
+      is.na(season) ~ "1",  # Handle NA values
+      season_rank == 1 ~ "1",
+      season_rank == 2 ~ "2",
+      TRUE ~ paste0(season_rank)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-season_rank) %>%    # Remove the temporary rank column
+  filter(avg_pct_offense != "NA") %>% 
+  select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle, avg_pct_offense)
+
+
+## Split the data into training and testing sets
+
+set.seed(18)  # for reproducibility
+train_indices <- sample(1:nrow(merged_avg_imputed), 0.7 * nrow(merged_avg_imputed))
+train_data <- merged_avg_imputed[train_indices, ]
+test_data <- merged_avg_imputed[-train_indices, ]
+
+## Train the Random Forest model
+
+rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = 500)
+
+
+## Test the model 
+
+test_predictions <- predict(rf_model, newdata = test_data)
+
+# Calculate the Mean Squared Error (MSE) as a measure of model performance
+mse <- mean((test_data$avg_pct_offense - test_predictions)^2)
+print(paste("Mean Squared Error on Test Data:", mse)) 
+
+## A Mean Squared Error (MSE) value of 0.0356 is quite low, which suggests that the model's predictions are generally close to the actual values in the test dataset
+
+
+# Get variable importance scores
+variable_importance <- importance(rf_model)
+
+# Print the importance scores
+print(variable_importance)
+
+variable_importance_df <- data.frame(
+  variable = row.names(variable_importance),
+  importance = as.vector(variable_importance)  # Convert to a vector if necessary
+)
+
+ggplot(variable_importance_df, aes(x = reorder(variable, importance), y = importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Variable Importance",
+       x = "Variable",
+       y = "Importance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+## Make a dataset with only 2023 combine class
+imputed_2023_merged<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id") %>% 
+  arrange(pfr_id, season) %>%  # Sort the data within each group
+  group_by(pfr_id) %>%
+  mutate(
+    season_rank = dense_rank(desc(season)),  # Assign ranks to seasons
+    season_number = case_when(
+      is.na(season) ~ "1",  # Handle NA values
+      season_rank == 1 ~ "1",
+      season_rank == 2 ~ "2",
+      TRUE ~ paste0(season_rank)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-season_rank) %>%    # Remove the temporary rank column
+  filter(season.x == 2023) %>% 
+  select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle, avg_pct_offense)
+
+## Make predictions using the trained model
+predictions_2023 <- predict(rf_model, newdata = imputed_2023_merged)
+
+
+## Rank the players
+
+imputed_2023_merged_id<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id") %>% 
+  arrange(pfr_id, season) %>%  # Sort the data within each group
+  group_by(pfr_id) %>%
+  mutate(
+    season_rank = dense_rank(desc(season)),  # Assign ranks to seasons
+    season_number = case_when(
+      is.na(season) ~ "1",  # Handle NA values
+      season_rank == 1 ~ "1",
+      season_rank == 2 ~ "2",
+      TRUE ~ paste0(season_rank)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-season_rank) %>%    # Remove the temporary rank column
+  filter(season.x == 2023) %>% 
+  select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle, avg_pct_offense, pfr_id)
+
+ranked_2023 <- cbind(imputed_2023_merged_id, predictions_2023)
+ranked_2023 <- ranked_2023 %>% 
+  arrange(desc(predictions_2023)) %>% 
+  select(pfr_id, predictions_2023)
+
+nfl_combine_names<- nfl_combine %>% 
+  select(pfr_id, player_name) %>% 
+  filter(pfr_id != "NA")
+
+name_ranks <- left_join(nfl_combine_names, ranked_2023, by = "pfr_id") %>% 
+  filter(predictions_2023 != "NA") %>% 
+  arrange(desc(predictions_2023))
+  
+  
+
+# Print the ranked draft class
+print(name_ranks)
+
+```
+
+
+```{r}
+## sensitivity analysis
+
+## Number of trees 
+
+ntree_values <- c(100, 200, 300, 400, 500)
+mse_values <- numeric(length(ntree_values))
+
+for (i in seq_along(ntree_values)) {
+  rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = ntree_values[i])
+  test_predictions <- predict(rf_model, newdata = test_data)
+  mse_values[i] <- mean((test_data$avg_pct_offense - test_predictions)^2)
+}
+
+plot(ntree_values, mse_values, type = "b", xlab = "Number of Trees", ylab = "Mean Squared Error")
+
+
+## variables considered at each split
+
+mtry_values <- seq(1, ncol(train_data) - 1)
+mse_values_mtry <- numeric(length(mtry_values))
+
+for (i in seq_along(mtry_values)) {
+  rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = 500, mtry = mtry_values[i])
+  test_predictions <- predict(rf_model, newdata = test_data)
+  mse_values_mtry[i] <- mean((test_data$avg_pct_offense - test_predictions)^2)
+}
+
+plot(mtry_values, mse_values_mtry, type = "b", xlab = "Number of Variables at Each Split (mtry)", ylab = "Mean Squared Error")
+
+
+
+```
+

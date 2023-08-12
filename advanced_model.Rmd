@@ -176,6 +176,36 @@ data_with_clusters <- data_subset %>%
 pairs(data_with_clusters[, -1], pch = 20, col = cluster_result$cluster)
 points(data_2023[, -1], pch = 20, col = "red")
 
+library(fmsb)
+
+
+radar_chart <- function(data, title, highlight_data = NULL) {
+  data_frame <- data[, -1]  # Exclude the "season" column
+  if (!is.null(highlight_data)) {
+    data_frame <- rbind(data_frame, highlight_data[, -1])
+  }
+
+  radar_data <- as.data.frame(t(data_frame))
+  colnames(radar_data) <- colnames(data_frame)
+  
+  radar_data_scaled <- radar_data
+  for (col in colnames(radar_data)) {
+    radar_data_scaled[col] <- radar_data[col] / max(radar_data[col])
+  }
+
+  radar_data_scaled <- rbind(radar_data_scaled, rep(1, ncol(radar_data_scaled)))
+
+  radar(radar_data_scaled,
+        axistype = 1,
+        title = title,
+        vlabels = colnames(data_frame),
+        seg = 6,
+        pcol = c(cluster_result$cluster, "red"),  # Assign colors
+        pfcol = c(cluster_result$cluster, "red"))  # Fill colors
+}
+
+# Create radar chart
+radar_chart(data_with_clusters, "Radar Chart of Football Player Characteristics", highlight_data = data_2023)
 
 ```
 
