@@ -16,6 +16,11 @@ library(tidyverse)
 library(janitor)
 library(nflreadr)
 library(mice)
+library(cluster)
+library(dendextend)
+library(kableExtra)
+library(fmsb)
+library(corrplot)
 
 ```
 
@@ -43,7 +48,6 @@ This investigation focuses on the correlation between athletic attributes of pla
  We additionally included: 
   - height (ht)
   - weight (wt)
-  - season (season)
   - bench press (bench)
   - broad jump (broad_jump)
  
@@ -82,21 +86,26 @@ wr_combine_data <- nfl_combine %>%
   filter(pfr_id!="NA")
 
 
-nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022)%>% 
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
   filter(position== "WR") %>% 
   filter(pfr_player_id!="NA") %>% 
   rename(pfr_id = pfr_player_id)
 
-nfl_pct_offense_avg<- nfl_snap_counts %>% 
+nfl_pct_offense_avg_season<- nfl_snap_counts %>% 
   group_by(pfr_id, season) %>% 
-  summarise(avg_pct_offense = mean(offense_pct))
+  summarise(avg_pct_offense = mean(offense_pct)) 
+
+nfl_pct_offense_avg<- nfl_snap_counts %>% 
+  group_by(pfr_id) %>% 
+  summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) 
 
 str(nfl_snap_counts, give.attr = F)
 
 
 merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
 
-merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") %>% 
+
+merged_avg_season<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = "pfr_id") %>% 
   arrange(pfr_id, season.y) %>%  # Sort the data within each group
   group_by(pfr_id) %>%
   mutate(
@@ -112,6 +121,9 @@ merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") %>%
   select(-season_rank)   # Remove the temporary rank column
 
 
+merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") 
+
+
 
 ```
 
@@ -122,7 +134,7 @@ merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") %>%
 
 ```{r}
 
-ggplot(merged_avg, aes(x=as.numeric(season_number), y= avg_pct_offense))+
+ggplot(merged_avg_season, aes(x=as.numeric(season_number), y= avg_pct_offense))+
   geom_point(color ="#002144")+
   geom_smooth(color = "#FA4E13")+
   theme_minimal()
@@ -136,7 +148,7 @@ ggplot(merged_avg, aes(x=as.numeric(season_number), y= avg_pct_offense))+
 
 ```{r}
 
-first_season<- merged_avg %>% 
+first_season<- merged_avg_season %>% 
   filter(season_number== 1)
 
 ggplot(merged_avg, aes(x=avg_pct_offense))+
@@ -152,7 +164,7 @@ ggplot(merged_avg, aes(x=avg_pct_offense))+
 
 ```{r}
 
-combined_seasons<- merged_avg %>% 
+combined_seasons<- merged_avg_season %>% 
   group_by(pfr_id) %>% 
   summarise(avg_pct_offense = mean(avg_pct_offense))
 
@@ -297,13 +309,11 @@ test_predictions <- predict(rf_model, newdata = test_data)
 mse <- mean((test_data$avg_pct_offense - test_predictions)^2)
 print(paste("Mean Squared Error on Test Data:", mse)) 
 
-## A Mean Squared Error (MSE) value of 0.0356 is quite low, which suggests that the model's predictions are generally close to the actual values in the test dataset
+## A Mean Squared Error (MSE) value of 0.068 is quite low, which suggests that the model's predictions are generally close to the actual values in the test dataset
 
 
 # Get variable importance scores
 variable_importance <- importance(rf_model)
-
-# Print the importance scores
 print(variable_importance)
 
 variable_importance_df <- data.frame(
@@ -374,13 +384,11 @@ name_ranks <- left_join(nfl_combine_names, ranked_2023, by = "pfr_id") %>%
   filter(predictions_2023 != "NA") %>% 
   arrange(desc(predictions_2023))
   
-  
-
-# Print the ranked draft class
 print(name_ranks)
 
 ```
 
+Margin of error around predictions for 2023? PUlling it toward the mean super hard 
 
 ```{r}
 ## sensitivity analysis
@@ -415,4 +423,149 @@ plot(mtry_values, mse_values_mtry, type = "b", xlab = "Number of Variables at Ea
 
 
 ```
+
+If shuttle speed is the most important? What is the ranking of shuttle 
+
+#### Cluster Analysis
+
+
+Cluster analysis is a technique used to group similar data points together based on their characteristics. The goal is to identify patterns, relationships, or structures within the data.
+
+```{r}
+
+
+# Select relevant columns for clustering
+selected_columns <- c('ht', 'bench', 'vertical', 'forty', 'broad_jump', 'cone', 'wt', 'shuttle')
+
+# Subset the dataframe
+subset_data <- imputed_data[selected_columns] 
+
+# Perform hierarchical clustering
+dist_matrix <- dist(subset_data)
+hierarchical_clusters <- hclust(dist_matrix)
+num_clusters <- 3 
+
+# Cut the dendrogram to get cluster assignments
+cluster_assignments <- cutree(hierarchical_clusters, k = num_clusters)
+
+# Add the cluster assignments to the original dataframe
+data_with_clusters <- imputed_data %>%
+  mutate(cluster = cluster_assignments)
+
+data_with_clusters_names<- left_join(nfl_combine_names, data_with_clusters, by = "pfr_id")%>% 
+  filter(season.x != "NA")
+
+# Determine optimal number of clusters using silhouette score
+silhouette_scores <- numeric(10)  # Try up to 10 clusters
+for (i in 2:10) {
+  cluster_assignments <- cutree(hierarchical_clusters, k = i)
+  silhouette_obj <- silhouette(cluster_assignments, dist_matrix)
+  silhouette_scores[i] <- mean(silhouette_obj[, "sil_width"])
+}
+optimal_num_clusters <- which.max(silhouette_scores)
+
+# Calculate the average silhouette width for the optimal number of clusters
+optimal_cluster_assignments <- cutree(hierarchical_clusters, k = optimal_num_clusters)
+optimal_silhouette_obj <- silhouette(optimal_cluster_assignments, dist_matrix)
+optimal_silhouette_avg <- mean(optimal_silhouette_obj[, "sil_width"])
+
+# Print results
+cat("Optimal number of clusters:", optimal_num_clusters, "\n")
+cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\n")
+
+```
+
+
+
+
+
+```{r}
+
+## Current Bronco WRs= Jerry Jeudy, Courtland Sutton, Mrquez Callaway, Lil' Jordan Humphrey, Montrell Washington (no combine stats for him), Kendall Hinton (no data on him either)
+# 	JeudJe00, SuttCo00, CallMa01, HumpLi01
+
+
+current_broncos_clusters<- data_with_clusters %>% 
+  filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
+  group_by(pfr_id) %>% 
+  summarise(mean(ht),mean(season.x), mean(wt),mean(forty),mean(bench),mean(vertical),mean(broad_jump),mean(cone),mean(shuttle), mean(cluster))
+
+
+clusters_2023_class<- data_with_clusters_names %>% 
+  filter(season.x == 2023)
+
+# Plot the dendrogram
+dend <- as.dendrogram(hierarchical_clusters)
+#dend %>% plot(horiz = TRUE)
+
+# visual exploration of clusters
+selected_vars <- c('ht', 'shuttle')
+selected_data <- data_with_clusters %>%
+  select(pfr_id, cluster, all_of(selected_vars))
+
+ggplot(selected_data, aes(x = ht, y = shuttle, color = factor(cluster))) +
+  geom_point() +
+  labs(x = "Height", y = "Shuttle", color = "Cluster") +
+  theme_minimal()
+
+
+# Filter data for the 2023 class
+class_2023 <- data_with_clusters_names %>%
+  filter(season.x == 2023)  # Adjust column name here
+
+# Prepare the data for the radar chart
+radar_data <- class_2023 %>%
+  select(-pfr_id, -season.x, -player_name)
+
+# Normalize the data to a [0, 1] scale (required for radar chart)
+normalized_data <- scale(radar_data)
+
+# Add column names to the normalized data
+colnames(normalized_data) <- colnames(radar_data)
+
+# Convert the data to a dataframe
+normalized_df <- as.data.frame(normalized_data)
+
+radar_chart <- ggplot(normalized_df, aes(group = cluster)) +
+  geom_polygon(aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1]), color = "black", size = 1, alpha = 0.5) +
+  geom_text(data = class_2023, aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1], label = player_name), hjust = 0) +
+  coord_polar() +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank()) +
+  labs(fill = "Cluster")
+
+# Display the radar chart
+print(radar_chart)
+
+### all of the clusters are on top of each other in a radar chart, suggesting that the average values of the characteristics for each cluster are very similar across all variables.
+
+# Group by cluster and calculate average characteristics
+cluster_avg_characteristics <- data_with_clusters %>%
+  group_by(cluster) %>%
+  summarize(
+    avg_ht = mean(ht),
+    avg_bench = mean(bench),
+    avg_vertical = mean(vertical),
+    avg_forty = mean(forty),
+    avg_broad_jump = mean(broad_jump),
+    avg_cone = mean(cone),
+    avg_wt = mean(wt),
+    avg_shuttle = mean(shuttle)
+  )
+
+cluster_table <- cluster_avg_characteristics %>%
+  mutate_at(vars(starts_with("avg_")), round, digits = 2) %>%
+  kable() %>%
+  kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed", "responsive")
+  )
+
+print(cluster_table)
+
+
+```
+
+
+
 
