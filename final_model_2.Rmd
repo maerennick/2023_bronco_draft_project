@@ -3,24 +3,9 @@ title: "final_model_2"
 author: "Mae Rennick"
 date: "2023-08-15"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
-library(tidyverse)
-library(randomForest)
-library(tidyverse)
-library(janitor)
-library(nflreadr)
-library(mice)
-library(cluster)
-library(dendextend)
-library(kableExtra)
-library(fmsb)
-library(corrplot)
-
-```
 
 
 ```{r setup, include=FALSE}
@@ -244,6 +229,14 @@ Multiple Imputation: Generate multiple imputed datasets, build models on each, a
 
 ```{r}
 
+data<- merged_avg %>%
+  #select(-bench, -cone, -shuttle) %>% 
+  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3) %>%   ## must have values for at least three events
+  filter(
+    !is.na(avg_pct_offense) |
+    (is.na(avg_pct_offense) & season.x == 2023)
+  ) ## only include predictive values for players who have played in the league (except 2023)
+
 non_imputed_data<- data %>% 
   drop_na() %>% 
   select(ht, wt, forty, vertical, cone, shuttle, avg_pct_offense)
@@ -253,15 +246,6 @@ non_imputed_data<- data %>%
 #### Imputed Data and Verification
 
 ```{r}
-
-data<- merged_avg %>%
-  #select(-bench, -cone, -shuttle) %>% 
-  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3) %>%   ## must have values for at least three events
-  filter(
-    !is.na(avg_pct_offense) |
-    (is.na(avg_pct_offense) & season.x == 2023)
-  ) ## only include predictive values for players who have played in the league (except 2023)
-
 
 # Count non-NA values in each column
 column_counts_all_2 <- sapply(data, count_non_na)
@@ -487,7 +471,7 @@ imputed_2023_merged<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id"
   filter(season.x == 2023) %>%
   mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
   mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
-  select(BMI, forty, vertical, cone, shuttle, avg_pct_offense)
+  select(BMI, forty, broad_jump, vertical, cone, bench, shuttle, avg_pct_offense)
 
 ## Make predictions using the trained model
 predictions_2023 <- predict(rf_model, newdata = imputed_2023_merged)
@@ -531,81 +515,174 @@ print(name_ranks)
 ```
 
 
-### Cluster Analysis
+#### Ranking based on average comparison 
 
-Cluster analysis is a technique used to group similar data points together based on their characteristics. The goal is to identify patterns, relationships, or structures within the data.
 
 ```{r}
 
-# Select relevant columns
-selected_cols <- c("pfr_id", "season", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")
-data_subset <- data[selected_cols]
+# Calculate the average across all columns and rows
+averages <- rowMeans(imputed_data[, -(1:2)])  # Exclude the non-numeric column
 
-# Filter data for the 2023 season
-data_2023 <- data_subset %>%
-  filter(season == 2023)
+# Calculate the absolute differences between each value and the corresponding row's average
+diff_from_avg <- imputed_data %>%
+  mutate(across(-(1:2), ~ abs(. - averages)))  # Exclude the non-numeric column
 
-# Standardize the data
-data_scaled <- scale(data_subset[, !colnames(data_subset) %in% c("pfr_id", "season")])
+# Summarize the differences for each row
+row_diff_summary <- diff_from_avg %>%
+  mutate(row_diff_sum = rowSums(across(-c(pfr_id, season.x))))
 
-# Apply K-Means clustering
-num_clusters <- 3  # Replace with the determined number of clusters
-cluster_result <- kmeans(data_scaled, centers = num_clusters, nstart = 25)
+# Rank the rows based on the summed differences
+ranked_rows <- row_diff_summary %>%
+  arrange(row_diff_sum) %>%
+  mutate(rank = row_number())
 
-# Add cluster assignments to the original data
-data_with_clusters <- data_subset %>%
-  mutate(cluster = cluster_result$cluster)
-
-# Scatter plot matrix (pair plot)
-pairs(data_with_clusters[, -1], pch = 20, col = cluster_result$cluster)
-points(data_2023[, -1], pch = 20, col = "red")
-
-
-radar_chart <- function(data, title, highlight_data = NULL) {
-  data_frame <- data[, -1]  # Exclude the "season" column
-  if (!is.null(highlight_data)) {
-    data_frame <- rbind(data_frame, highlight_data[, -1])
-  }
-
-  radar_data <- as.data.frame(t(data_frame))
-  colnames(radar_data) <- colnames(data_frame)
-  
-  radar_data_scaled <- radar_data
-  for (col in colnames(radar_data)) {
-    radar_data_scaled[col] <- radar_data[col] / max(radar_data[col])
-  }
-
-  radar_data_scaled <- rbind(radar_data_scaled, rep(1, ncol(radar_data_scaled)))
-
-  radar(radar_data_scaled,
-        axistype = 1,
-        title = title,
-        vlabels = colnames(data_frame),
-        seg = 6,
-        pcol = c(cluster_result$cluster, "red"),  # Assign colors
-        pfcol = c(cluster_result$cluster, "red"))  # Fill colors
-}
-
-# Create radar chart
-radar_chart(data_with_clusters, "Radar Chart of Football Player Characteristics", highlight_data = data_2023)
-
-
-#Prepare Data for Clustering
-clustering_data_2023 <- imputed_data %>%
-  filter(season == 2023) %>% 
-  select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle)
-
-#Perform Clustering (K-Means)
-set.seed(18)
-num_clusters <- 3  # Number of clusters to create
-kmeans_model <- kmeans(clustering_data_2023, centers = num_clusters)
-
-clustering_data_2023$cluster <- kmeans_model$cluster
-
+ranked_rows_2023<- left_join(ranked_rows, name_ranks, by = "pfr_id") %>% 
+  filter(season.x ==2023) %>% 
+  group_by(pfr_id, player_name, rank, predictions_2023) %>% 
+  summarise()
 
 ```
 
 
 
+### Cluster Analysis
+
+Cluster analysis is a technique used to group similar data points together based on their characteristics. The goal is to identify patterns, relationships, or structures within the data.
+
+```{r}
+# Select relevant columns for clustering
+selected_columns <- c('BMI', 'vertical', 'bench', 'broad_jump', 'forty', 'cone', 'shuttle')
+
+imputed_data_BMI<- imputed_data %>% 
+  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
+  mutate(BMI = wt/(ht_in^2)*703)
+  
+
+# Subset the dataframe
+subset_data <- imputed_data_BMI[selected_columns] 
+
+# Perform hierarchical clustering
+dist_matrix <- dist(subset_data)
+hierarchical_clusters <- hclust(dist_matrix)
+num_clusters <- 3 
+
+# Cut the dendrogram to get cluster assignments
+cluster_assignments <- cutree(hierarchical_clusters, k = num_clusters)
+
+# Add the cluster assignments to the original dataframe
+data_with_clusters <- imputed_data %>%
+  mutate(cluster = cluster_assignments)
+
+data_with_clusters_names<- left_join(nfl_combine_names, data_with_clusters, by = "pfr_id")%>% 
+  filter(season.x != "NA")
+
+# Determine optimal number of clusters using silhouette score
+silhouette_scores <- numeric(10)  # Try up to 10 clusters
+for (i in 2:10) {
+  cluster_assignments <- cutree(hierarchical_clusters, k = i)
+  silhouette_obj <- silhouette(cluster_assignments, dist_matrix)
+  silhouette_scores[i] <- mean(silhouette_obj[, "sil_width"])
+}
+optimal_num_clusters <- which.max(silhouette_scores)
+
+# Calculate the average silhouette width for the optimal number of clusters
+optimal_cluster_assignments <- cutree(hierarchical_clusters, k = optimal_num_clusters)
+optimal_silhouette_obj <- silhouette(optimal_cluster_assignments, dist_matrix)
+optimal_silhouette_avg <- mean(optimal_silhouette_obj[, "sil_width"])
+
+# Print results
+cat("Optimal number of clusters:", optimal_num_clusters, "\n")
+cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\n")
+
+
+#A silhouette score of 0.25537 is a positive value, which means the clusters in are somewhat well-separated and distinguishable, but there might be some overlap or proximity between neighboring clusters. 
+
+```
+
+
+
+```{r}
+
+## Current Bronco WRs= Jerry Jeudy, Courtland Sutton, Mrquez Callaway, Lil' Jordan Humphrey, Montrell Washington (no combine stats for him), Kendall Hinton (no data on him either)
+# 	JeudJe00, SuttCo00, CallMa01, HumpLi01
+
+
+current_broncos_clusters<- data_with_clusters %>% 
+  filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
+  group_by(pfr_id) %>% 
+  summarise(mean(season.x), mean(BMI),mean(forty),mean(vertical), mean(cone),mean(shuttle), mean(cluster))
+
+
+clusters_2023_class<- data_with_clusters_names %>% 
+  filter(season.x == 2023)
+
+# Plot the dendrogram
+dend <- as.dendrogram(hierarchical_clusters)
+#dend %>% plot(horiz = TRUE)
+
+# visual exploration of clusters
+selected_vars <- c('ht', 'shuttle')
+selected_data <- data_with_clusters %>%
+  select(pfr_id, cluster, all_of(selected_vars))
+
+ggplot(selected_data, aes(x = BMI, y = shuttle, color = factor(cluster))) +
+  geom_point() +
+  labs(x = "Height", y = "Shuttle", color = "Cluster") +
+  theme_minimal()
+
+
+# Filter data for the 2023 class
+class_2023 <- data_with_clusters_names %>%
+  filter(season.x == 2023)  # Adjust column name here
+
+# Prepare the data for the radar chart
+radar_data <- class_2023 %>%
+  select(-pfr_id, -season.x, -player_name)
+
+# Normalize the data to a [0, 1] scale (required for radar chart)
+normalized_data <- scale(radar_data)
+
+# Add column names to the normalized data
+colnames(normalized_data) <- colnames(radar_data)
+
+# Convert the data to a dataframe
+normalized_df <- as.data.frame(normalized_data)
+
+radar_chart <- ggplot(normalized_df, aes(group = cluster)) +
+  geom_polygon(aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1]), color = "black", size = 1, alpha = 0.5) +
+  geom_text(data = class_2023, aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1], label = player_name), hjust = 0) +
+  coord_polar() +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank()) +
+  labs(fill = "Cluster")
+
+# Display the radar chart
+print(radar_chart)
+
+### all of the clusters are on top of each other in a radar chart, suggesting that the average values of the characteristics for each cluster are very similar across all variables.
+
+# Group by cluster and calculate average characteristics
+cluster_avg_characteristics <- data_with_clusters %>%
+  group_by(cluster) %>%
+  summarize(
+    avg_BMI = mean(BMI),
+    avg_vertical = mean(vertical),
+    avg_forty = mean(forty),
+    avg_cone = mean(cone),
+    avg_shuttle = mean(shuttle)
+  )
+
+cluster_table <- cluster_avg_characteristics %>%
+  mutate_at(vars(starts_with("avg_")), round, digits = 2) %>%
+  kable() %>%
+  kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed", "responsive")
+  )
+
+print(cluster_table)
+
+
+```
 
 
