@@ -686,7 +686,8 @@ cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\
 
 cluster_off_pct<- left_join(data_with_clusters_names, nfl_pct_offense_avg, by = "pfr_id") %>% 
   summarise(player_name, avg_pct_offense, cluster) %>% 
-    arrange(-avg_pct_offense)
+  filter(avg_pct_offense != 0) %>% 
+  arrange(-avg_pct_offense)
 
 
 ## Current Bronco WRs= Jerry Jeudy, Courtland Sutton, Mrquez Callaway, Lil' Jordan Humphrey, Montrell Washington (no combine stats for him), Kendall Hinton (no data on him either)
@@ -727,31 +728,6 @@ selected_data <- data_with_clusters %>%
 class_2023 <- data_with_clusters_names %>%
   filter(season.x == 2023)  # Adjust column name here
 
-# Prepare the data for the radar chart
-radar_data <- class_2023 %>%
-  select(-pfr_id, -season.x, -player_name)
-
-# Normalize the data to a [0, 1] scale (required for radar chart)
-normalized_data <- scale(radar_data)
-
-# Add column names to the normalized data
-colnames(normalized_data) <- colnames(radar_data)
-
-# Convert the data to a dataframe
-normalized_df <- as.data.frame(normalized_data)
-
-radar_chart <- ggplot(normalized_df, aes(group = cluster)) +
-  geom_polygon(aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1]), color = "black", size = 1, alpha = 0.5) +
-  geom_text(data = class_2023, aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1], label = player_name), hjust = 0) +
-  coord_polar() +
-  theme_minimal() +
-  theme(axis.text.x = element_blank(), axis.title.x = element_blank()) +
-  labs(fill = "Cluster")
-
-# Display the radar chart
-#print(radar_chart)
-
-### all of the clusters are on top of each other in a radar chart, suggesting that the average values of the characteristics for each cluster are very similar across all variables.
 
 # Group by cluster and calculate average characteristics
 cluster_avg_characteristics <- data_with_clusters %>%
@@ -779,6 +755,15 @@ print(cluster_table)
 
 ggplot(data=data_with_clusters, aes(x=cluster))+
   geom_histogram()
+
+
+cluster_off_pct$cluster_name <- factor(cluster_off_pct$cluster, levels = c(1, 2, 3), labels = c("B", "C", "A"))
+
+ggplot(cluster_off_pct, aes(x = cluster_name, y = avg_pct_offense)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2, alpha = 0.7, color= "#FA4E13") +
+  labs(x = "Cluster", y = "Average % Offense") +
+  theme_minimal()
 
 
 ```
