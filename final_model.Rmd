@@ -449,7 +449,8 @@ imputed_2023_merged<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id"
   filter(season.x == 2023) %>%
   mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
   mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
-  select(BMI, forty, vertical, cone, shuttle, avg_pct_offense)
+  select(BMI, forty, vertical, cone, bench, shuttle, avg_pct_offense, broad_jump)
+
 
 ## Make predictions using the trained model
 predictions_2023 <- predict(rf_model, newdata = imputed_2023_merged)
@@ -582,9 +583,12 @@ Cluster analysis is a technique used to group similar data points together based
 
 ```{r}
 
+imputed_data<- imputed_data %>% 
+  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
+  mutate(BMI = wt/(ht_in^2)*703)
 
 # Select relevant columns for clustering
-selected_columns <- c('BMI', 'vertical', 'forty', 'cone', 'shuttle')
+selected_columns <- c('BMI', 'vertical', 'bench', 'broad_jump', 'forty', 'cone', 'shuttle')
 
 # Subset the dataframe
 subset_data <- imputed_data[selected_columns] 
@@ -634,10 +638,13 @@ cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\
 # 	JeudJe00, SuttCo00, CallMa01, HumpLi01
 
 
-current_broncos_clusters<- data_with_clusters %>% 
+current_broncos_clusters_avg<- data_with_clusters %>% 
   filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
   group_by(pfr_id) %>% 
-  summarise(mean(season.x), mean(BMI),mean(forty),mean(vertical), mean(cone),mean(shuttle), mean(cluster))
+  summarise(mean(season.x), mean(BMI),mean(forty),mean(vertical), mean(cone),mean(shuttle), cluster))
+
+current_broncos_clusters<- data_with_clusters %>% 
+  filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01")
 
 
 clusters_2023_class<- data_with_clusters_names %>% 

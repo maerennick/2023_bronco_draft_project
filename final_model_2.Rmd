@@ -23,6 +23,7 @@ library(kableExtra)
 library(fmsb)
 library(corrplot)
 library(GGally)
+library(FactoMineR)
 
 ```
 
@@ -115,6 +116,8 @@ merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id")
 
 ```
 
+
+note: merging data with a percent_offense average does not account for injuries, how long a player has been playing in the league and how they have progressed through time. 
 
 #### Exploration
 
@@ -345,7 +348,21 @@ merged_avg_imputed<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id")
   select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle, avg_pct_offense) %>% 
   mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
   mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
-  select(-ht_in, -ht, -wt)
+  select(-ht_in, -BMI)
+
+
+#### explore the data/correlations (pairs plot)
+
+# Select the columns of interest
+columns_of_interest <- c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle", "avg_pct_offense")
+
+# Create the pairs plot
+pairs_plot <- ggpairs(merged_avg_imputed[, columns_of_interest])
+
+# Print the pairs plot
+print(pairs_plot)
+
+### note: avg_offense_pct is poorly correlated with all of the predictor variables (0.1 was the highest)
 
 ## Split the data into training and testing sets
 
@@ -387,6 +404,38 @@ ggplot(variable_importance_df, aes(x = reorder(variable, importance), y = import
 ```
 
 
+Figure for presentation: correlations between each variable and average offensive percentage
+
+```{r}
+
+# Compute correlations between columns and avg_pct_offense
+correlations <- cor(merged_avg_imputed[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], merged_avg_imputed$avg_pct_offense)
+
+# Create a data frame for plotting
+cor_data <- data.frame(Column = colnames(merged_avg_imputed[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")]), Correlation = correlations)
+
+# Create the bar plot using ggplot2
+ggplot(data = cor_data, aes(x = Column, y = Correlation)) +
+  geom_bar(stat = "identity", fill = "#FA4E13") +
+  labs(x= "",
+       y = "Correlation with Offensive Percentage") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_discrete(labels = c(
+    ht = "Height",
+    wt = "Weight",
+    forty = "40-Yard Dash",
+    bench = "Bench Press",
+    vertical = "Vertical Jump",
+    broad_jump = "Broad Jump",
+    cone = "Cone Drill",
+    shuttle = "Shuttle Run"
+  ))
+
+```
+
+
+
 ##### Without Imputation
 
 ```{r}
@@ -418,6 +467,13 @@ print(paste("Mean Squared Error on Test Data:", mse))
 #### Model Verification
 
 ```{r}
+
+### Pairs plot 
+
+
+### simple regression parameters 
+
+
 ## sensitivity analysis
 
 ## Number of trees 
@@ -539,7 +595,10 @@ ranked_rows <- row_diff_summary %>%
 ranked_rows_2023<- left_join(ranked_rows, name_ranks, by = "pfr_id") %>% 
   filter(season.x ==2023) %>% 
   group_by(pfr_id, player_name, rank, predictions_2023) %>% 
-  summarise()
+  summarise() %>% 
+  arrange(rank)
+
+print(ranked_rows_2023)
 
 ```
 
@@ -549,28 +608,48 @@ ranked_rows_2023<- left_join(ranked_rows, name_ranks, by = "pfr_id") %>%
 
 Cluster analysis is a technique used to group similar data points together based on their characteristics. The goal is to identify patterns, relationships, or structures within the data.
 
-```{r}
-# Select relevant columns for clustering
-selected_columns <- c('BMI', 'vertical', 'bench', 'broad_jump', 'forty', 'cone', 'shuttle')
 
-imputed_data_BMI<- imputed_data %>% 
-  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
-  mutate(BMI = wt/(ht_in^2)*703)
+
+
+```{r}
+
+
+data_2<- merged_avg %>%
+  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3)
+
+
+imputed_data_2 <- mice(data_2[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+
+# Perform the imputation
+imputed_data_2 <- complete(imputed_data_2)
+
+
+# Select relevant columns for clustering
+selected_columns <- c('ht', 'wt', 'vertical', 'bench', 'broad_jump', 'forty', 'cone', 'shuttle')
   
 
 # Subset the dataframe
-subset_data <- imputed_data_BMI[selected_columns] 
+subset_data <- imputed_data_2[selected_columns]
 
-# Perform hierarchical clustering
-dist_matrix <- dist(subset_data)
-hierarchical_clusters <- hclust(dist_matrix)
+
+
+# PCA for dimensionality reduction before clustering
+
+num_principal_components <- 2
+pca_result <- PCA(subset_data, scale.unit = TRUE)
+subset_data_pca <- as.data.frame(pca_result$ind$coord[, 1:num_principal_components])
+
+
+# Using Ward's linkage and Euclidean distance
+dist_matrix <- dist(subset_data_pca, method = "euclidean")
+hierarchical_clusters <- hclust(dist_matrix, method = "ward.D2")
 num_clusters <- 3 
 
 # Cut the dendrogram to get cluster assignments
 cluster_assignments <- cutree(hierarchical_clusters, k = num_clusters)
 
 # Add the cluster assignments to the original dataframe
-data_with_clusters <- imputed_data %>%
+data_with_clusters <- imputed_data_2 %>%
   mutate(cluster = cluster_assignments)
 
 data_with_clusters_names<- left_join(nfl_combine_names, data_with_clusters, by = "pfr_id")%>% 
@@ -591,11 +670,11 @@ optimal_silhouette_obj <- silhouette(optimal_cluster_assignments, dist_matrix)
 optimal_silhouette_avg <- mean(optimal_silhouette_obj[, "sil_width"])
 
 # Print results
-cat("Optimal number of clusters:", optimal_num_clusters, "\n")
+#cat("Optimal number of clusters:", optimal_num_clusters, "\n")
 cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\n")
 
 
-#A silhouette score of 0.25537 is a positive value, which means the clusters in are somewhat well-separated and distinguishable, but there might be some overlap or proximity between neighboring clusters. 
+#A silhouette score of .21 is a positive value, which means the clusters in are somewhat well-separated and distinguishable, but there might be some overlap or proximity between neighboring clusters. 
 
 ```
 
@@ -603,14 +682,27 @@ cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\
 
 ```{r}
 
+##### clusters with offense_pct
+
+cluster_off_pct<- left_join(data_with_clusters_names, nfl_pct_offense_avg, by = "pfr_id") %>% 
+  summarise(player_name, avg_pct_offense, cluster) %>% 
+    arrange(-avg_pct_offense)
+
+
 ## Current Bronco WRs= Jerry Jeudy, Courtland Sutton, Mrquez Callaway, Lil' Jordan Humphrey, Montrell Washington (no combine stats for him), Kendall Hinton (no data on him either)
 # 	JeudJe00, SuttCo00, CallMa01, HumpLi01
 
 
+current_broncos_clusters_avg<- data_with_clusters %>% 
+  filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
+  group_by(pfr_id) %>%
+  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
+  mutate(BMI = wt/(ht_in^2)*703) %>% 
+  summarise(mean(season.x), mean(ht), mean(wt), mean(forty),mean(vertical), mean(cone),mean(shuttle), mean(cluster))
+
 current_broncos_clusters<- data_with_clusters %>% 
   filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
-  group_by(pfr_id) %>% 
-  summarise(mean(season.x), mean(BMI),mean(forty),mean(vertical), mean(cone),mean(shuttle), mean(cluster))
+  group_by(pfr_id)
 
 
 clusters_2023_class<- data_with_clusters_names %>% 
@@ -625,10 +717,10 @@ selected_vars <- c('ht', 'shuttle')
 selected_data <- data_with_clusters %>%
   select(pfr_id, cluster, all_of(selected_vars))
 
-ggplot(selected_data, aes(x = BMI, y = shuttle, color = factor(cluster))) +
-  geom_point() +
-  labs(x = "Height", y = "Shuttle", color = "Cluster") +
-  theme_minimal()
+# ggplot(selected_data, aes(x = ht, y = shuttle, color = factor(cluster))) +
+#   geom_point() +
+#   labs(x = "Height", y = "Shuttle", color = "Cluster") +
+#   theme_minimal()
 
 
 # Filter data for the 2023 class
@@ -657,7 +749,7 @@ radar_chart <- ggplot(normalized_df, aes(group = cluster)) +
   labs(fill = "Cluster")
 
 # Display the radar chart
-print(radar_chart)
+#print(radar_chart)
 
 ### all of the clusters are on top of each other in a radar chart, suggesting that the average values of the characteristics for each cluster are very similar across all variables.
 
@@ -665,7 +757,9 @@ print(radar_chart)
 cluster_avg_characteristics <- data_with_clusters %>%
   group_by(cluster) %>%
   summarize(
-    avg_BMI = mean(BMI),
+    avg_ht = mean(ht),
+    avg_wt = mean(wt),
+    avg_broad_jump = mean(broad_jump),
     avg_vertical = mean(vertical),
     avg_forty = mean(forty),
     avg_cone = mean(cone),
@@ -681,6 +775,10 @@ cluster_table <- cluster_avg_characteristics %>%
   )
 
 print(cluster_table)
+
+
+ggplot(data=data_with_clusters, aes(x=cluster))+
+  geom_histogram()
 
 
 ```
