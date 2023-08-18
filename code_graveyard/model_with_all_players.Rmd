@@ -1,0 +1,142 @@
+---
+title: "model with all players"
+author: "Mae Rennick"
+date: "2023-08-15"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE, warning= FALSE, message= FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE, message= FALSE)
+
+library(tidyverse)
+library(randomForest)
+library(tidyverse)
+library(janitor)
+library(nflreadr)
+library(mice)
+library(cluster)
+library(dendextend)
+library(kableExtra)
+library(fmsb)
+library(corrplot)
+library(GGally)
+library(FactoMineR)
+
+```
+
+
+#### Import
+
+```{r}
+nfl_combine <- nflreadr::load_combine()
+str(nfl_combine,  give.attr = F)
+
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
+  #filter(position== "WR") %>% # include all the players
+  filter(pfr_player_id!="NA") %>% 
+  rename(pfr_id = pfr_player_id)
+```
+
+#### Cleaning
+
+```{r}
+convert_height_to_decimal <- function(ht) {
+  components <- strsplit(ht, "-")[[1]]
+  feet <- as.numeric(components[1])
+  inches <- as.numeric(components[2])
+  decimal_feet <- feet + inches / 12
+  return(decimal_feet)
+}
+
+nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal)
+
+features <- c("pos", "decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "season", "pfr_id") ## relevant features for model training
+
+wr_combine_data <- nfl_combine %>%
+  select(features) %>%  ## only include relevant features
+  rename(ht= decimal_height) %>% 
+  filter(pos== "WR") %>% 
+  filter(pfr_id!="NA")
+
+nfl_pct_offense_avg_season<- nfl_snap_counts %>% 
+  group_by(pfr_id, season) %>% 
+  summarise(avg_pct_offense = mean(offense_pct)) 
+
+nfl_pct_offense_avg<- nfl_snap_counts %>% 
+  group_by(pfr_id) %>% 
+  summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) 
+
+
+merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
+
+
+merged_avg_season<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = "pfr_id") %>% 
+  arrange(pfr_id, season.y) %>%  # Sort the data within each group
+  group_by(pfr_id) %>%
+  mutate(
+    season_rank = dense_rank(desc(season.y)),  # Assign ranks to seasons
+    season_number = case_when(
+      is.na(season.y) ~ "1",  # Handle NA values
+      season_rank == 1 ~ "1",
+      season_rank == 2 ~ "2",
+      TRUE ~ paste0(season_rank)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-season_rank)   # Remove the temporary rank column
+
+
+merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id")
+
+```
+
+#### Non-imputed Data
+
+
+```{r}
+
+data<- merged_avg %>%
+  #select(-bench, -cone, -shuttle) %>% 
+  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3) %>%   ## must have values for at least three events
+  filter(
+    !is.na(avg_pct_offense) |
+    (is.na(avg_pct_offense) & season.x == 2023)
+  ) ## only include predictive values for players who have played in the league (except 2023)
+
+non_imputed_data<- data %>% 
+  drop_na() %>% 
+  select(ht, wt, forty, vertical, cone, shuttle, avg_pct_offense)
+
+```
+
+
+##### Model Without Imputation
+
+```{r}
+
+## Split the data into training and testing sets
+
+set.seed(18)  # for reproducibility
+train_indices_2 <- sample(1:nrow(non_imputed_data), 0.7 * nrow(non_imputed_data))
+train_data_2 <- non_imputed_data[train_indices_2, ]
+test_data_2 <- non_imputed_data[-train_indices_2, ]
+
+## Train the Random Forest model
+
+rf_model_2 <- randomForest(avg_pct_offense ~ ., data =train_data_2, ntree = 500)
+
+rf_model_2
+
+## Test the model 
+
+test_predictions_2 <- predict(rf_model_2, newdata = test_data_2)
+
+# Calculate the Mean Squared Error (MSE) as a measure of model performance
+mse <- mean((test_data_2$avg_pct_offense - test_predictions_2)^2)
+print(paste("Mean Squared Error on Test Data:", mse)) 
+
+```
+

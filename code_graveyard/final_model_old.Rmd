@@ -1,12 +1,11 @@
 ---
-title: "final_model_2"
+title: "model_attempt 3"
 author: "Mae Rennick"
-date: "2023-08-15"
+date: "2023-08-12"
 output: html_document
 editor_options: 
   chunk_output_type: console
 ---
-
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -22,8 +21,6 @@ library(dendextend)
 library(kableExtra)
 library(fmsb)
 library(corrplot)
-library(GGally)
-library(FactoMineR)
 
 ```
 
@@ -38,34 +35,38 @@ In other analyses: performance criteria include several variables including: dra
 This investigation focuses on the correlation between athletic attributes of players and overall production (offensive percentage). Notably, previous studies have found inconsistent evidence to link combine tests and professional football performance (Kuzmits and Adams 2008) which is likely because athleticism is only one aspect of the game. However, by using athletic attributes as predictor variables in a model in which performance outcomes are known, we may be able to discern collective attributes that characterize players who perform well. 
 
 
-## Project Components
+#### Data import/ cleaning steps
 
-1. Data Import, Cleaning and Exploration 
+1. import both datasets( combine data and snap count data)
+2. convert combine stats to numeric values
+3. pick features of combine dataset to include in the model. According to Meil et al. 2018, success in the NFL were significantly correlated (p < .05) with several physical ability measures:
+ - forty-yard dash (forty)
+ - vertical jump height (vertical)
+ - twenty-yard shuttle (shuttle)
+ - 3-cone drill(cone)
+ 
+ We additionally included: 
+  - height (ht)
+  - weight (wt)
+  - bench press (bench)
+  - broad jump (broad_jump)
+ 
+4. find the average offensive percentage for each player per season
 
-2. Data Imputation: Multiple Imputation
 
-3. Random Forest Model
+##### Decisions
 
-4. Cluster Analysis
+- remove defensive snaps and special teams snaps (assuming that the majority of WR production happens on offense)
+- find average offense_pct per season (note: this does not take into account key features including: injuries, length of season, how many seasons a player has played in the NFL, and opposing team)
 
 
-### Data Import, Cleaning and Exploration
-
-#### Import
 
 ```{r}
+
 nfl_combine <- nflreadr::load_combine()
 str(nfl_combine,  give.attr = F)
 
-nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
-  filter(position== "WR") %>% 
-  filter(pfr_player_id!="NA") %>% 
-  rename(pfr_id = pfr_player_id)
-```
 
-#### Cleaning
-
-```{r}
 convert_height_to_decimal <- function(ht) {
   components <- strsplit(ht, "-")[[1]]
   feet <- as.numeric(components[1])
@@ -84,6 +85,12 @@ wr_combine_data <- nfl_combine %>%
   filter(pos== "WR") %>% 
   filter(pfr_id!="NA")
 
+
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
+  filter(position== "WR") %>% 
+  filter(pfr_player_id!="NA") %>% 
+  rename(pfr_id = pfr_player_id)
+
 nfl_pct_offense_avg_season<- nfl_snap_counts %>% 
   group_by(pfr_id, season) %>% 
   summarise(avg_pct_offense = mean(offense_pct)) 
@@ -91,6 +98,9 @@ nfl_pct_offense_avg_season<- nfl_snap_counts %>%
 nfl_pct_offense_avg<- nfl_snap_counts %>% 
   group_by(pfr_id) %>% 
   summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) 
+
+
+str(nfl_snap_counts, give.attr = F)
 
 
 merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
@@ -112,14 +122,14 @@ merged_avg_season<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = 
   select(-season_rank)   # Remove the temporary rank column
 
 
-merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id")
+merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") 
+
+
 
 ```
 
 
-note: merging data with a percent_offense average does not account for injuries, how long a player has been playing in the league and how they have progressed through time. 
-
-#### Exploration
+### Data Exploration
 
 1. On average, how does player production change throughout their career (by season)?
 
@@ -215,19 +225,30 @@ ggplot(count_df_all, aes(x = Column, y = Count)) +
 
 ```
 
+### Which parameters to use in the RF model
 
-### Data Imputation: Multiple Imputation 
+Correlation Analysis:
+You can analyze the correlations between variables to identify potential multicollinearity. Variables that are highly correlated with each other might not contribute unique information to the model. In such cases, you might choose to keep only one of the correlated variables.
 
-Missing Values: Only two players from the 2023 combine competed in all events.
+
+
+
+### Missing Values
+
+Only two players from the 2023 combine competed in all events.
+
+#### Decisions
+
+- Players must have completed at least 3 different tests to be included in this analysis (combine rules)
+- removing predictor variables that have less than half of the individuals who particiapted (bench, cone, shuttle)
+
 
 For random forest, it's important to choose an imputation method that preserves the relationships and patterns in the data as closely as possible. Among the options, "Multiple Imputation" is often recommended to minimize bias in the context of building predictive models like random forests.
+
 
 Multiple Imputation: Generate multiple imputed datasets, build models on each, and combine the results.
 - moderate to high amount of missing data.
 - missing data mechanism is not ignorable (MAR or MNAR).
-
-
-#### Non-imputed Data
 
 
 ```{r}
@@ -240,15 +261,6 @@ data<- merged_avg %>%
     (is.na(avg_pct_offense) & season.x == 2023)
   ) ## only include predictive values for players who have played in the league (except 2023)
 
-non_imputed_data<- data %>% 
-  drop_na() %>% 
-  select(ht, wt, forty, vertical, cone, shuttle, avg_pct_offense)
-
-```
-
-#### Imputed Data and Verification
-
-```{r}
 
 # Count non-NA values in each column
 column_counts_all_2 <- sapply(data, count_non_na)
@@ -312,57 +324,70 @@ ggplot(summary_df, aes(x = Variable, y = Value, fill = Measure)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 
+
+
 ```
 
 
-### Random Forest Model
 
-#### Predictor Variable selection
+#### other imputations
 
-1. Selecting variables 
+```{r}
+
+
+non_imputed_data<- data %>% 
+  drop_na() %>% 
+  select(ht, wt, forty, vertical, cone, shuttle, avg_pct_offense)
+
+```
+
+
+
+
+### Model Building and verfication 
 
 According to Meil et al. 2018, success in the NFL were significantly correlated (p < .05) with several physical ability measures:
- - player size (ht and wt)
  - forty-yard dash (forty)
  - vertical jump height (vertical)
  - twenty-yard shuttle (shuttle)
  - 3-cone drill(cone)
- 
- However, the measure of player success was not offensive percentage. 
- 
- 
-2. Handling correlated/nested variables
 
-Height and weight are highly correlated in this dataset, therefore I will use a combined BMI score to account for both. 
 
-#### Model Building
+use BMI instead of height and weight? create a variable called "BMI" (Body Mass Index) by dividing weight (kg) by the square of height (meters). Then, you can include this composite variable in your model and assess its importance like any other predictor.
 
-##### With Imputation
+Broad jump and vertical are also heavily correlated (pick one)
+
+cone and shuttle are a bit correlated (but less) (but the paper says they are both important)
+
+# could have fit it better but that would be cheating 
+
 
 ```{r}
+
 ## Bind imputed data with snap data 
 
 merged_avg_imputed<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id") %>%
   filter(season.x != 2023) %>% # do not include 2023 players in model
+  #arrange(pfr_id, season) %>%  # Sort the data within each group
+ # group_by(pfr_id) %>%
+ # mutate(
+    #season_rank = dense_rank(desc(season)),  # Assign ranks to seasons
+    #season_number = case_when(
+      #is.na(season) ~ "1",  # Handle NA values
+     # season_rank == 1 ~ "1",
+      #season_rank == 2 ~ "2",
+      #TRUE ~ paste0(season_rank)
+    #)
+  #) %>%
+  #ungroup() %>%
+  #select(-season_rank) %>%    # Remove the temporary rank column
   filter(avg_pct_offense != "NA") %>% 
   select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle, avg_pct_offense) %>% 
   mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
   mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
-  select(-ht_in, -BMI)
+  select(-ht_in, -ht, -wt)
 
 
-#### explore the data/correlations (pairs plot)
-
-# Select the columns of interest
-columns_of_interest <- c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle", "avg_pct_offense")
-
-# Create the pairs plot
-pairs_plot <- ggpairs(merged_avg_imputed[, columns_of_interest])
-
-# Print the pairs plot
-print(pairs_plot)
-
-### note: avg_offense_pct is poorly correlated with all of the predictor variables (0.1 was the highest)
 
 ## Split the data into training and testing sets
 
@@ -385,7 +410,10 @@ test_predictions <- predict(rf_model, newdata = test_data)
 mse <- mean((test_data$avg_pct_offense - test_predictions)^2)
 print(paste("Mean Squared Error on Test Data:", mse)) 
 
-# Variable importance scores
+## A Mean Squared Error (MSE) value of 0.066 is quite low, which suggests that the model's predictions are generally close to the actual values in the test dataset
+
+
+# Get variable importance scores
 variable_importance <- importance(rf_model)
 print(variable_importance)
 
@@ -401,114 +429,8 @@ ggplot(variable_importance_df, aes(x = reorder(variable, importance), y = import
        y = "Importance") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
 
 
-Figure for presentation: correlations between each variable and average offensive percentage
-
-```{r}
-
-# Compute correlations between columns and avg_pct_offense
-correlations <- cor(merged_avg_imputed[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], merged_avg_imputed$avg_pct_offense)
-
-# Create a data frame for plotting
-cor_data <- data.frame(Column = colnames(merged_avg_imputed[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")]), Correlation = correlations)
-
-# Create the bar plot using ggplot2
-ggplot(data = cor_data, aes(x = Column, y = Correlation)) +
-  geom_bar(stat = "identity", fill = "#FA4E13") +
-  labs(x= "",
-       y = "Correlation with Offensive Percentage") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  scale_x_discrete(labels = c(
-    ht = "Height",
-    wt = "Weight",
-    forty = "40-Yard Dash",
-    bench = "Bench Press",
-    vertical = "Vertical Jump",
-    broad_jump = "Broad Jump",
-    cone = "Cone Drill",
-    shuttle = "Shuttle Run"
-  ))
-
-```
-
-
-
-##### Without Imputation
-
-```{r}
-
-## Split the data into training and testing sets
-
-set.seed(18)  # for reproducibility
-train_indices_2 <- sample(1:nrow(non_imputed_data), 0.7 * nrow(non_imputed_data))
-train_data_2 <- non_imputed_data[train_indices_2, ]
-test_data_2 <- non_imputed_data[-train_indices_2, ]
-
-## Train the Random Forest model
-
-rf_model_2 <- randomForest(avg_pct_offense ~ ., data =train_data_2, ntree = 500)
-
-rf_model_2
-
-## Test the model 
-
-test_predictions_2 <- predict(rf_model_2, newdata = test_data_2)
-
-# Calculate the Mean Squared Error (MSE) as a measure of model performance
-mse <- mean((test_data_2$avg_pct_offense - test_predictions_2)^2)
-print(paste("Mean Squared Error on Test Data:", mse)) 
-
-```
-
-
-#### Model Verification
-
-```{r}
-
-### Pairs plot 
-
-
-### simple regression parameters 
-
-
-## sensitivity analysis
-
-## Number of trees 
-
-ntree_values <- c(100, 200, 300, 400, 500)
-mse_values <- numeric(length(ntree_values))
-
-for (i in seq_along(ntree_values)) {
-  rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = ntree_values[i])
-  test_predictions <- predict(rf_model, newdata = test_data)
-  mse_values[i] <- mean((test_data$avg_pct_offense - test_predictions)^2)
-}
-
-plot(ntree_values, mse_values, type = "b", xlab = "Number of Trees", ylab = "Mean Squared Error")
-
-
-## variables considered at each split
-
-mtry_values <- seq(1, ncol(train_data) - 1)
-mse_values_mtry <- numeric(length(mtry_values))
-
-for (i in seq_along(mtry_values)) {
-  rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = 500, mtry = mtry_values[i])
-  test_predictions <- predict(rf_model, newdata = test_data)
-  mse_values_mtry[i] <- mean((test_data$avg_pct_offense - test_predictions)^2)
-}
-
-plot(mtry_values, mse_values_mtry, type = "b", xlab = "Number of Variables at Each Split (mtry)", ylab = "Mean Squared Error")
-
-```
-
-
-#### Model Results: Player Ranking
-
-```{r}
 ## Make a dataset with only 2023 combine class
 imputed_2023_merged<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id") %>% 
   arrange(pfr_id, season.x) %>%  # Sort the data within each group
@@ -527,7 +449,8 @@ imputed_2023_merged<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id"
   filter(season.x == 2023) %>%
   mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
   mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
-  select(BMI, forty, broad_jump, vertical, cone, bench, shuttle, avg_pct_offense)
+  select(BMI, forty, vertical, cone, bench, shuttle, avg_pct_offense, broad_jump)
+
 
 ## Make predictions using the trained model
 predictions_2023 <- predict(rf_model, newdata = imputed_2023_merged)
@@ -568,88 +491,118 @@ name_ranks <- left_join(nfl_combine_names, ranked_2023, by = "pfr_id") %>%
   arrange(desc(predictions_2023))
   
 print(name_ranks)
+
 ```
 
-
-#### Ranking based on average comparison 
 
 
 ```{r}
 
-# Calculate the average across all columns and rows
-averages <- rowMeans(imputed_data[, -(1:2)])  # Exclude the non-numeric column
 
-# Calculate the absolute differences between each value and the corresponding row's average
-diff_from_avg <- imputed_data %>%
-  mutate(across(-(1:2), ~ abs(. - averages)))  # Exclude the non-numeric column
 
-# Summarize the differences for each row
-row_diff_summary <- diff_from_avg %>%
-  mutate(row_diff_sum = rowSums(across(-c(pfr_id, season.x))))
+## Split the data into training and testing sets
 
-# Rank the rows based on the summed differences
-ranked_rows <- row_diff_summary %>%
-  arrange(row_diff_sum) %>%
-  mutate(rank = row_number())
+set.seed(18)  # for reproducibility
+train_indices_2 <- sample(1:nrow(non_imputed_data), 0.7 * nrow(non_imputed_data))
+train_data_2 <- non_imputed_data[train_indices_2, ]
+test_data_2 <- non_imputed_data[-train_indices_2, ]
 
-ranked_rows_2023<- left_join(ranked_rows, name_ranks, by = "pfr_id") %>% 
-  filter(season.x ==2023) %>% 
-  group_by(pfr_id, player_name, rank, predictions_2023) %>% 
-  summarise() %>% 
-  arrange(rank)
+## Train the Random Forest model
 
-print(ranked_rows_2023)
+rf_model_2 <- randomForest(avg_pct_offense ~ ., data =train_data_2, ntree = 500)
+
+rf_model_2
+
+## Test the model 
+
+test_predictions_2 <- predict(rf_model_2, newdata = test_data_2)
+
+# Calculate the Mean Squared Error (MSE) as a measure of model performance
+mse <- mean((test_data_2$avg_pct_offense - test_predictions_2)^2)
+print(paste("Mean Squared Error on Test Data:", mse)) 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+Margin of error around predictions for 2023? PUlling it toward the mean super hard 
+
+```{r}
+## sensitivity analysis
+
+## Number of trees 
+
+ntree_values <- c(100, 200, 300, 400, 500)
+mse_values <- numeric(length(ntree_values))
+
+for (i in seq_along(ntree_values)) {
+  rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = ntree_values[i])
+  test_predictions <- predict(rf_model, newdata = test_data)
+  mse_values[i] <- mean((test_data$avg_pct_offense - test_predictions)^2)
+}
+
+plot(ntree_values, mse_values, type = "b", xlab = "Number of Trees", ylab = "Mean Squared Error")
+
+
+## variables considered at each split
+
+mtry_values <- seq(1, ncol(train_data) - 1)
+mse_values_mtry <- numeric(length(mtry_values))
+
+for (i in seq_along(mtry_values)) {
+  rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = 500, mtry = mtry_values[i])
+  test_predictions <- predict(rf_model, newdata = test_data)
+  mse_values_mtry[i] <- mean((test_data$avg_pct_offense - test_predictions)^2)
+}
+
+plot(mtry_values, mse_values_mtry, type = "b", xlab = "Number of Variables at Each Split (mtry)", ylab = "Mean Squared Error")
+
+
+
+
+
+
 
 ```
 
 
 
-### Cluster Analysis
+#### Cluster Analysis
+
 
 Cluster analysis is a technique used to group similar data points together based on their characteristics. The goal is to identify patterns, relationships, or structures within the data.
 
-
-
-
 ```{r}
 
-
-data_2<- merged_avg %>%
-  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3)
-
-
-imputed_data_2 <- mice(data_2[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
-
-# Perform the imputation
-imputed_data_2 <- complete(imputed_data_2)
-
+imputed_data<- imputed_data %>% 
+  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
+  mutate(BMI = wt/(ht_in^2)*703)
 
 # Select relevant columns for clustering
-selected_columns <- c('ht', 'wt', 'vertical', 'bench', 'broad_jump', 'forty', 'cone', 'shuttle')
-  
+selected_columns <- c('BMI', 'vertical', 'bench', 'broad_jump', 'forty', 'cone', 'shuttle')
 
 # Subset the dataframe
-subset_data <- imputed_data_2[selected_columns]
+subset_data <- imputed_data[selected_columns] 
 
-
-
-# PCA for dimensionality reduction before clustering
-
-num_principal_components <- 2
-pca_result <- PCA(subset_data, scale.unit = TRUE)
-subset_data_pca <- as.data.frame(pca_result$ind$coord[, 1:num_principal_components])
-
-
-# Using Ward's linkage and Euclidean distance
-dist_matrix <- dist(subset_data_pca, method = "euclidean")
-hierarchical_clusters <- hclust(dist_matrix, method = "ward.D2")
+# Perform hierarchical clustering
+dist_matrix <- dist(subset_data)
+hierarchical_clusters <- hclust(dist_matrix)
 num_clusters <- 3 
 
 # Cut the dendrogram to get cluster assignments
 cluster_assignments <- cutree(hierarchical_clusters, k = num_clusters)
 
 # Add the cluster assignments to the original dataframe
-data_with_clusters <- imputed_data_2 %>%
+data_with_clusters <- imputed_data %>%
   mutate(cluster = cluster_assignments)
 
 data_with_clusters_names<- left_join(nfl_combine_names, data_with_clusters, by = "pfr_id")%>% 
@@ -670,25 +623,16 @@ optimal_silhouette_obj <- silhouette(optimal_cluster_assignments, dist_matrix)
 optimal_silhouette_avg <- mean(optimal_silhouette_obj[, "sil_width"])
 
 # Print results
-#cat("Optimal number of clusters:", optimal_num_clusters, "\n")
+cat("Optimal number of clusters:", optimal_num_clusters, "\n")
 cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\n")
-
-
-#A silhouette score of .21 is a positive value, which means the clusters in are somewhat well-separated and distinguishable, but there might be some overlap or proximity between neighboring clusters. 
 
 ```
 
 
 
+
+
 ```{r}
-
-##### clusters with offense_pct
-
-cluster_off_pct<- left_join(data_with_clusters_names, nfl_pct_offense_avg, by = "pfr_id") %>% 
-  summarise(player_name, avg_pct_offense, cluster) %>% 
-  filter(avg_pct_offense != 0) %>% 
-  arrange(-avg_pct_offense)
-
 
 ## Current Bronco WRs= Jerry Jeudy, Courtland Sutton, Mrquez Callaway, Lil' Jordan Humphrey, Montrell Washington (no combine stats for him), Kendall Hinton (no data on him either)
 # 	JeudJe00, SuttCo00, CallMa01, HumpLi01
@@ -696,14 +640,11 @@ cluster_off_pct<- left_join(data_with_clusters_names, nfl_pct_offense_avg, by = 
 
 current_broncos_clusters_avg<- data_with_clusters %>% 
   filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
-  group_by(pfr_id) %>%
-  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
-  mutate(BMI = wt/(ht_in^2)*703) %>% 
-  summarise(mean(season.x), mean(ht), mean(wt), mean(forty),mean(vertical), mean(cone),mean(shuttle), mean(cluster))
+  group_by(pfr_id) %>% 
+  summarise(mean(season.x), mean(BMI),mean(forty),mean(vertical), mean(cone),mean(shuttle), cluster))
 
 current_broncos_clusters<- data_with_clusters %>% 
-  filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01") %>% 
-  group_by(pfr_id)
+  filter(pfr_id == "JeudJe00" | pfr_id == "SuttCo00" | pfr_id == "CallMa01" | pfr_id == "HumpLi01")
 
 
 clusters_2023_class<- data_with_clusters_names %>% 
@@ -718,24 +659,47 @@ selected_vars <- c('ht', 'shuttle')
 selected_data <- data_with_clusters %>%
   select(pfr_id, cluster, all_of(selected_vars))
 
-# ggplot(selected_data, aes(x = ht, y = shuttle, color = factor(cluster))) +
-#   geom_point() +
-#   labs(x = "Height", y = "Shuttle", color = "Cluster") +
-#   theme_minimal()
+ggplot(selected_data, aes(x = BMI, y = shuttle, color = factor(cluster))) +
+  geom_point() +
+  labs(x = "Height", y = "Shuttle", color = "Cluster") +
+  theme_minimal()
 
 
 # Filter data for the 2023 class
 class_2023 <- data_with_clusters_names %>%
   filter(season.x == 2023)  # Adjust column name here
 
+# Prepare the data for the radar chart
+radar_data <- class_2023 %>%
+  select(-pfr_id, -season.x, -player_name)
+
+# Normalize the data to a [0, 1] scale (required for radar chart)
+normalized_data <- scale(radar_data)
+
+# Add column names to the normalized data
+colnames(normalized_data) <- colnames(radar_data)
+
+# Convert the data to a dataframe
+normalized_df <- as.data.frame(normalized_data)
+
+radar_chart <- ggplot(normalized_df, aes(group = cluster)) +
+  geom_polygon(aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1]), color = "black", size = 1, alpha = 0.5) +
+  geom_text(data = class_2023, aes(x = as.numeric(row.names(normalized_df)), y = normalized_df[,1], label = player_name), hjust = 0) +
+  coord_polar() +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.title.x = element_blank()) +
+  labs(fill = "Cluster")
+
+# Display the radar chart
+print(radar_chart)
+
+### all of the clusters are on top of each other in a radar chart, suggesting that the average values of the characteristics for each cluster are very similar across all variables.
 
 # Group by cluster and calculate average characteristics
 cluster_avg_characteristics <- data_with_clusters %>%
   group_by(cluster) %>%
   summarize(
-    avg_ht = mean(ht),
-    avg_wt = mean(wt),
-    avg_broad_jump = mean(broad_jump),
+    avg_BMI = mean(BMI),
     avg_vertical = mean(vertical),
     avg_forty = mean(forty),
     avg_cone = mean(cone),
@@ -753,19 +717,8 @@ cluster_table <- cluster_avg_characteristics %>%
 print(cluster_table)
 
 
-ggplot(data=data_with_clusters, aes(x=cluster))+
-  geom_histogram()
-
-
-cluster_off_pct$cluster_name <- factor(cluster_off_pct$cluster, levels = c(1, 2, 3), labels = c("B", "C", "A"))
-
-ggplot(cluster_off_pct, aes(x = cluster_name, y = avg_pct_offense)) +
-  geom_boxplot() +
-  geom_jitter(width = 0.2, alpha = 0.7, color= "#FA4E13") +
-  labs(x = "Cluster", y = "Average % Offense") +
-  theme_minimal()
-
-
 ```
+
+
 
 

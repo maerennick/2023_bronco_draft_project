@@ -1,5 +1,5 @@
 ---
-title: "final_model_2"
+title: "Model with non-averaged pct_offense"
 author: "Mae Rennick"
 date: "2023-08-15"
 output: html_document
@@ -28,28 +28,6 @@ library(FactoMineR)
 ```
 
 
-
-## Player Production 
-
-The amount of times a player is on the field is important to see how much they play. Offensive percentage determines the percent of offensive snaps taken. We assume that a higher offensive percentage is demonstrative of player production. 
-
-In other analyses: performance criteria include several variables including: draft order; 3 years each of salary received and games played; and position-specific data; stats from the preceding year (college stats).
-
-This investigation focuses on the correlation between athletic attributes of players and overall production (offensive percentage). Notably, previous studies have found inconsistent evidence to link combine tests and professional football performance (Kuzmits and Adams 2008) which is likely because athleticism is only one aspect of the game. However, by using athletic attributes as predictor variables in a model in which performance outcomes are known, we may be able to discern collective attributes that characterize players who perform well. 
-
-
-## Project Components
-
-1. Data Import, Cleaning and Exploration 
-
-2. Data Imputation: Multiple Imputation
-
-3. Random Forest Model
-
-4. Cluster Analysis
-
-
-### Data Import, Cleaning and Exploration
 
 #### Import
 
@@ -84,13 +62,13 @@ wr_combine_data <- nfl_combine %>%
   filter(pos== "WR") %>% 
   filter(pfr_id!="NA")
 
-nfl_pct_offense_avg_season<- nfl_snap_counts %>% 
-  group_by(pfr_id, season) %>% 
-  summarise(avg_pct_offense = mean(offense_pct)) 
-
 nfl_pct_offense_avg<- nfl_snap_counts %>% 
+  group_by(pfr_id, season) %>% 
+  summarise(avg_pct_offense = mean(offense_pct)) %>% 
+  filter(avg_pct_offense != 0) %>%  ## taking out players who might have been injured or didnt play for a whole season
+  ungroup() %>% 
   group_by(pfr_id) %>% 
-  summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) 
+  summarise(season= mean(season), avg_pct_offense = mean(avg_pct_offense))
 
 
 merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
@@ -116,56 +94,6 @@ merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id")
 
 ```
 
-
-note: merging data with a percent_offense average does not account for injuries, how long a player has been playing in the league and how they have progressed through time. 
-
-#### Exploration
-
-1. On average, how does player production change throughout their career (by season)?
-
-```{r}
-
-ggplot(merged_avg_season, aes(x=as.numeric(season_number), y= avg_pct_offense))+
-  geom_point(color ="#002144")+
-  geom_smooth(color = "#FA4E13")+
-  theme_minimal()
-
-### visually: it looks like players who make it to their 7th+ season are more likely to have a higher offensive_pct. This may influence model outcomes 
-
-
-```
-
-2. What does average player production look like in the first season? 
-
-```{r}
-
-first_season<- merged_avg_season %>% 
-  filter(season_number== 1)
-
-ggplot(merged_avg, aes(x=avg_pct_offense))+
-  geom_histogram(fill = "#002144")+
-  theme_minimal()
-
-## quite a few players getting a lot of playing time in their first season
-
-```
-
-
-3. What does average player production look like average across all seasons by player?
-
-```{r}
-
-combined_seasons<- merged_avg_season %>% 
-  group_by(pfr_id) %>% 
-  summarise(avg_pct_offense = mean(avg_pct_offense))
-
-ggplot(combined_seasons, aes(x=avg_pct_offense))+
-  geom_histogram(fill = "#FA4E13")+
-  theme_minimal()
-
-## normal-ish distribution with a slight right skew
-
-```
 
 
 4. 2023 combine class 
