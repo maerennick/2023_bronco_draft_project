@@ -1,8 +1,14 @@
 ---
-title: "final_model_2"
+title: "Wide Receiver Production -- 2023 Combine"
 author: "Mae Rennick"
 date: "2023-08-15"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: yeti
+    highlight: tango
+    code_folding: hide
 editor_options: 
   chunk_output_type: console
 ---
@@ -29,7 +35,7 @@ library(FactoMineR)
 
 
 
-## Player Production 
+### Player Production 
 
 The amount of times a player is on the field is important to see how much they play. Offensive percentage determines the percent of offensive snaps taken. We assume that a higher offensive percentage is demonstrative of player production. 
 
@@ -38,7 +44,7 @@ In other analyses: performance criteria include several variables including: dra
 This investigation focuses on the correlation between athletic attributes of players and overall production (offensive percentage). Notably, previous studies have found inconsistent evidence to link combine tests and professional football performance (Kuzmits and Adams 2008) which is likely because athleticism is only one aspect of the game. However, by using athletic attributes as predictor variables in a model in which performance outcomes are known, we may be able to discern collective attributes that characterize players who perform well. 
 
 
-## Project Components
+### Project Components
 
 1. Data Import, Cleaning and Exploration 
 
@@ -55,7 +61,6 @@ This investigation focuses on the correlation between athletic attributes of pla
 
 ```{r}
 nfl_combine <- nflreadr::load_combine()
-str(nfl_combine,  give.attr = F)
 
 nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
   filter(position== "WR") %>% 
@@ -267,10 +272,15 @@ ggplot(count_df_all_2, aes(x = Column, y = Count)) +
 num_imputations <- 10
 
 # Create an imputation object using the 'mice' function
+
+invisible({
 imputed_data <- mice(data[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+})
 
 # Perform the imputation
+invisible({
 imputed_data <- complete(imputed_data)
+})
 
 ## Evaluate imputation 
 
@@ -468,12 +478,6 @@ print(paste("Mean Squared Error on Test Data:", mse))
 
 ```{r}
 
-### Pairs plot 
-
-
-### simple regression parameters 
-
-
 ## sensitivity analysis
 
 ## Number of trees 
@@ -527,7 +531,7 @@ imputed_2023_merged<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id"
   filter(season.x == 2023) %>%
   mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
   mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
-  select(BMI, forty, broad_jump, vertical, cone, bench, shuttle, avg_pct_offense)
+  select(ht, wt, forty, broad_jump, vertical, cone, bench, shuttle, avg_pct_offense)
 
 ## Make predictions using the trained model
 predictions_2023 <- predict(rf_model, newdata = imputed_2023_merged)
@@ -567,7 +571,7 @@ name_ranks <- left_join(nfl_combine_names, ranked_2023, by = "pfr_id") %>%
   filter(predictions_2023 != "NA") %>% 
   arrange(desc(predictions_2023))
   
-print(name_ranks)
+#print(name_ranks)
 ```
 
 
@@ -585,7 +589,8 @@ diff_from_avg <- imputed_data %>%
 
 # Summarize the differences for each row
 row_diff_summary <- diff_from_avg %>%
-  mutate(row_diff_sum = rowSums(across(-c(pfr_id, season.x))))
+  mutate(row_diff_sum = rowSums(across(-c(pfr_id, season.x)))) %>% 
+  select(-ht, -wt)
 
 # Rank the rows based on the summed differences
 ranked_rows <- row_diff_summary %>%
@@ -598,7 +603,7 @@ ranked_rows_2023<- left_join(ranked_rows, name_ranks, by = "pfr_id") %>%
   summarise() %>% 
   arrange(rank)
 
-print(ranked_rows_2023)
+#print(ranked_rows_2023)
 
 ```
 
@@ -609,8 +614,6 @@ print(ranked_rows_2023)
 Cluster analysis is a technique used to group similar data points together based on their characteristics. The goal is to identify patterns, relationships, or structures within the data.
 
 
-
-
 ```{r}
 
 
@@ -618,7 +621,9 @@ data_2<- merged_avg %>%
   filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3)
 
 
-imputed_data_2 <- mice(data_2[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+invisible({
+  imputed_data_2 <- mice(data_2[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+})
 
 # Perform the imputation
 imputed_data_2 <- complete(imputed_data_2)
@@ -631,16 +636,12 @@ selected_columns <- c('ht', 'wt', 'vertical', 'bench', 'broad_jump', 'forty', 'c
 # Subset the dataframe
 subset_data <- imputed_data_2[selected_columns]
 
-
-
 # PCA for dimensionality reduction before clustering
-
 num_principal_components <- 2
 pca_result <- PCA(subset_data, scale.unit = TRUE)
 subset_data_pca <- as.data.frame(pca_result$ind$coord[, 1:num_principal_components])
 
 
-# Using Ward's linkage and Euclidean distance
 dist_matrix <- dist(subset_data_pca, method = "euclidean")
 hierarchical_clusters <- hclust(dist_matrix, method = "ward.D2")
 num_clusters <- 3 
@@ -655,7 +656,7 @@ data_with_clusters <- imputed_data_2 %>%
 data_with_clusters_names<- left_join(nfl_combine_names, data_with_clusters, by = "pfr_id")%>% 
   filter(season.x != "NA")
 
-# Determine optimal number of clusters using silhouette score
+# Silhouette score
 silhouette_scores <- numeric(10)  # Try up to 10 clusters
 for (i in 2:10) {
   cluster_assignments <- cutree(hierarchical_clusters, k = i)
@@ -664,17 +665,15 @@ for (i in 2:10) {
 }
 optimal_num_clusters <- which.max(silhouette_scores)
 
-# Calculate the average silhouette width for the optimal number of clusters
+# Calculate the average silhouette width for clusters
 optimal_cluster_assignments <- cutree(hierarchical_clusters, k = optimal_num_clusters)
 optimal_silhouette_obj <- silhouette(optimal_cluster_assignments, dist_matrix)
 optimal_silhouette_avg <- mean(optimal_silhouette_obj[, "sil_width"])
 
-# Print results
-#cat("Optimal number of clusters:", optimal_num_clusters, "\n")
-cat("Average silhouette width for optimal clusters:", optimal_silhouette_avg, "\n")
 
+cat("Average silhouette width for clusters:", optimal_silhouette_avg, "\n")
 
-#A silhouette score of .21 is a positive value, which means the clusters in are somewhat well-separated and distinguishable, but there might be some overlap or proximity between neighboring clusters. 
+#clusters in are somewhat well-separated and distinguishable, but there might be some overlap or proximity between neighboring clusters. 
 
 ```
 
@@ -709,20 +708,6 @@ current_broncos_clusters<- data_with_clusters %>%
 clusters_2023_class<- data_with_clusters_names %>% 
   filter(season.x == 2023)
 
-# Plot the dendrogram
-dend <- as.dendrogram(hierarchical_clusters)
-#dend %>% plot(horiz = TRUE)
-
-# visual exploration of clusters
-selected_vars <- c('ht', 'shuttle')
-selected_data <- data_with_clusters %>%
-  select(pfr_id, cluster, all_of(selected_vars))
-
-# ggplot(selected_data, aes(x = ht, y = shuttle, color = factor(cluster))) +
-#   geom_point() +
-#   labs(x = "Height", y = "Shuttle", color = "Cluster") +
-#   theme_minimal()
-
 
 # Filter data for the 2023 class
 class_2023 <- data_with_clusters_names %>%
@@ -750,11 +735,12 @@ cluster_table <- cluster_avg_characteristics %>%
     bootstrap_options = c("striped", "hover", "condensed", "responsive")
   )
 
-print(cluster_table)
+#print(cluster_table)
 
 
 ggplot(data=data_with_clusters, aes(x=cluster))+
-  geom_histogram()
+  geom_histogram(fill = "#002144")+
+  theme_minimal()
 
 
 cluster_off_pct$cluster_name <- factor(cluster_off_pct$cluster, levels = c(1, 2, 3), labels = c("B", "C", "A"))
