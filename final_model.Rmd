@@ -6,7 +6,7 @@ output:
   html_document:
     toc: true
     toc_float: true
-    theme: yeti
+    theme: united
     highlight: tango
     code_folding: hide
 editor_options: 
@@ -33,9 +33,9 @@ library(FactoMineR)
 
 ```
 
+### Overview
 
-
-### Player Production 
+#### Player Production 
 
 The amount of times a player is on the field is important to see how much they play. Offensive percentage determines the percent of offensive snaps taken. We assume that a higher offensive percentage is demonstrative of player production. 
 
@@ -44,7 +44,7 @@ In other analyses: performance criteria include several variables including: dra
 This investigation focuses on the correlation between athletic attributes of players and overall production (offensive percentage). Notably, previous studies have found inconsistent evidence to link combine tests and professional football performance (Kuzmits and Adams 2008) which is likely because athleticism is only one aspect of the game. However, by using athletic attributes as predictor variables in a model in which performance outcomes are known, we may be able to discern collective attributes that characterize players who perform well. 
 
 
-### Project Components
+#### Project Components
 
 1. Data Import, Cleaning and Exploration 
 
@@ -299,7 +299,7 @@ correlation_imputed <- cor(imputed_data[, sapply(imputed_data, is.numeric)])
 corrplot(correlation_original, method = "color", title = "Correlation Matrix (Original Data)")
 corrplot(correlation_imputed, method = "color", title = "Correlation Matrix (Imputed Data)")
 
-### result: slight shift, but overall similar correlations
+# result: slight shift, but overall similar correlations
 
 #Compare means, medians, and standard deviations
 original_summary <- apply(numeric_data, 2, function(x) c(mean(x), median(x), sd(x)))
@@ -343,7 +343,7 @@ According to Meil et al. 2018, success in the NFL were significantly correlated 
  
 2. Handling correlated/nested variables
 
-Height and weight are highly correlated in this dataset, therefore I will use a combined BMI score to account for both. 
+Height and weight are highly correlated in this dataset. However, the dataset is small enough that it will not have a significant effect.
 
 #### Model Building
 

@@ -1,0 +1,392 @@
+---
+title: "off_pct_season_1"
+author: "Mae Rennick"
+date: "2023-08-18"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning= FALSE, message= FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE, message= FALSE)
+
+library(tidyverse)
+library(randomForest)
+library(tidyverse)
+library(janitor)
+library(nflreadr)
+library(mice)
+library(cluster)
+library(dendextend)
+library(kableExtra)
+library(fmsb)
+library(corrplot)
+library(GGally)
+library(FactoMineR)
+
+```
+
+
+#### Import
+
+```{r}
+nfl_combine <- nflreadr::load_combine()
+str(nfl_combine,  give.attr = F)
+
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
+  #filter(position== "WR") %>% # include all the players
+  filter(pfr_player_id!="NA") %>% 
+  rename(pfr_id = pfr_player_id)
+```
+
+#### Cleaning
+
+```{r}
+convert_height_to_decimal <- function(ht) {
+  components <- strsplit(ht, "-")[[1]]
+  feet <- as.numeric(components[1])
+  inches <- as.numeric(components[2])
+  decimal_feet <- feet + inches / 12
+  return(decimal_feet)
+}
+
+nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal)
+
+features <- c("pos", "decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "season", "pfr_id") ## relevant features for model training
+
+wr_combine_data <- nfl_combine %>%
+  select(features) %>%  ## only include relevant features
+  rename(ht= decimal_height) %>% 
+  filter(pos== "WR") %>% 
+  filter(pfr_id!="NA")
+
+nfl_pct_offense_avg_season<- nfl_snap_counts %>% 
+  group_by(pfr_id, season) %>% 
+  summarise(avg_pct_offense = mean(offense_pct)) 
+
+nfl_pct_offense_avg<- nfl_snap_counts %>% 
+  group_by(pfr_id) %>% 
+  summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) 
+
+
+merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
+
+
+merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = "pfr_id") %>% 
+  arrange(pfr_id, season.y) %>%  # Sort the data within each group
+  group_by(pfr_id) %>%
+  mutate(
+    season_rank = dense_rank(desc(season.y)),  # Assign ranks to seasons
+    season_number = case_when(
+      is.na(season.y) ~ "1",  # Handle NA values
+      season_rank == 1 ~ "1",
+      season_rank == 2 ~ "2",
+      TRUE ~ paste0(season_rank)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-season_rank) %>%    # Remove the temporary rank column
+  filter(season_number == 1)
+
+
+```
+
+4. 2023 combine class 
+
+```{r}
+
+merged_avg_2023<- merged_avg %>% 
+  filter(season.x == 2023)
+
+summary <- merged_avg_2023 %>%
+  filter(!is.na(ht) & !is.na(wt) & !is.na(forty) & !is.na(vertical) &
+           !is.na(bench) & !is.na(broad_jump) & !is.na(cone) & !is.na(shuttle)) %>%
+  summarise(total_rows = n())
+
+
+# Create a function to count non-NA values in a column
+count_non_na <- function(column) {
+  sum(!is.na(column))
+}
+
+# Count non-NA values in each column
+column_counts <- sapply(merged_avg_2023, count_non_na)
+
+# Create a data frame for plotting
+count_df <- data.frame(Column = names(column_counts), Count = column_counts)
+
+ggplot(count_df, aes(x = Column, y = Count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "Columns", y = "Count", title = "Non-NA Value Counts in Columns") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+# Count non-NA values in each column
+column_counts_all <- sapply(merged_avg, count_non_na)
+
+# Create a data frame for plotting
+count_df_all <- data.frame(Column = names(column_counts_all), Count = column_counts_all)
+
+ggplot(count_df_all, aes(x = Column, y = Count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "Columns", y = "Count", title = "Non-NA Value Counts in Columns") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+### Data Imputation: Multiple Imputation 
+
+Missing Values: Only two players from the 2023 combine competed in all events.
+
+For random forest, it's important to choose an imputation method that preserves the relationships and patterns in the data as closely as possible. Among the options, "Multiple Imputation" is often recommended to minimize bias in the context of building predictive models like random forests.
+
+Multiple Imputation: Generate multiple imputed datasets, build models on each, and combine the results.
+- moderate to high amount of missing data.
+- missing data mechanism is not ignorable (MAR or MNAR).
+
+
+#### Non-imputed Data
+
+
+```{r}
+
+data<- merged_avg %>%
+  #select(-bench, -cone, -shuttle) %>% 
+  filter(rowSums(!is.na(select(., forty, vertical, bench, broad_jump, cone, shuttle))) >= 3) %>%   ## must have values for at least three events
+  filter(
+    !is.na(avg_pct_offense) |
+    (is.na(avg_pct_offense) & season.x == 2023)
+  ) ## only include predictive values for players who have played in the league (except 2023)
+
+non_imputed_data<- data %>% 
+  drop_na() %>% 
+  select(ht, wt, forty, vertical, cone, shuttle, avg_pct_offense)
+
+```
+
+#### Imputed Data and Verification
+
+```{r}
+
+# Count non-NA values in each column
+column_counts_all_2 <- sapply(data, count_non_na)
+
+# Create a data frame for plotting
+count_df_all_2 <- data.frame(Column = names(column_counts_all_2), Count = column_counts_all_2)
+
+ggplot(count_df_all_2, aes(x = Column, y = Count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(x = "Columns", y = "Count", title = "Non-NA Value Counts in Columns") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Set the number of imputations
+num_imputations <- 10
+
+# Create an imputation object using the 'mice' function
+
+invisible({
+imputed_data <- mice(data[, c("pfr_id", "season.x", "ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], m = num_imputations)
+})
+
+# Perform the imputation
+invisible({
+imputed_data <- complete(imputed_data)
+})
+
+## Evaluate imputation 
+
+# Calculate missing data proportions for each variable
+missing_proportions <- colMeans(is.na(data))
+
+# Calculate correlations (only for numeric columns)
+numeric_data <- data[, sapply(data, is.numeric)] %>% 
+  drop_na() %>% ## get rid of NA values for comparison
+  select(season.x, ht, wt, forty, bench, vertical, broad_jump, cone, shuttle)
+
+correlation_original <- cor(numeric_data, use = "complete.obs")
+correlation_imputed <- cor(imputed_data[, sapply(imputed_data, is.numeric)])
+
+# Plot correlations
+corrplot(correlation_original, method = "color", title = "Correlation Matrix (Original Data)")
+corrplot(correlation_imputed, method = "color", title = "Correlation Matrix (Imputed Data)")
+
+# result: slight shift, but overall similar correlations
+
+#Compare means, medians, and standard deviations
+original_summary <- apply(numeric_data, 2, function(x) c(mean(x), median(x), sd(x)))
+imputed_summary <- apply(imputed_data[, sapply(imputed_data, is.numeric)], 2, function(x) c(mean(x), median(x), sd(x)))
+
+## turn values into a dataframe for visulatization
+summary_df <- data.frame(
+  Variable = rep(names(numeric_data), each = 3),
+  Measure = rep(c("Mean", "Median", "Standard Deviation"), times = ncol(numeric_data)),
+  Value = c(original_summary, imputed_summary),
+  Data = rep(c("Original", "Imputed"), each = length(names(numeric_data)) * 3)
+)
+
+ggplot(summary_df, aes(x = Variable, y = Value, fill = Measure)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_grid(Data ~ Measure, scales = "free_y", switch = "y") +
+  labs(title = "Comparison of Means, Medians, and Standard Deviations",
+       y = "Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+### Random Forest Model
+
+#### Predictor Variable selection
+
+1. Selecting variables 
+
+According to Meil et al. 2018, success in the NFL were significantly correlated (p < .05) with several physical ability measures:
+ - player size (ht and wt)
+ - forty-yard dash (forty)
+ - vertical jump height (vertical)
+ - twenty-yard shuttle (shuttle)
+ - 3-cone drill(cone)
+ 
+ However, the measure of player success was not offensive percentage. 
+ 
+ 
+2. Handling correlated/nested variables
+
+Height and weight are highly correlated in this dataset. However, the dataset is small enough that it will not have a significant effect.
+
+#### Model Building
+
+##### With Imputation
+
+```{r}
+## Bind imputed data with snap data 
+
+merged_avg_imputed<- left_join(imputed_data, nfl_pct_offense_avg, by = "pfr_id") %>%
+  filter(season.x != 2023) %>% # do not include 2023 players in model
+  filter(avg_pct_offense != "NA") %>% 
+  select(ht, wt, forty, bench, vertical, broad_jump, cone, shuttle, avg_pct_offense) %>% 
+  mutate(ht_in= ht*12) %>%  # convert feet to inches for BMI calc
+  mutate(BMI = wt/(ht_in^2)*703) %>%  #The multiplication by 703 is used to convert the BMI calculation to the standard units used in the BMI formula.
+  select(-ht_in, -BMI)
+
+
+#### explore the data/correlations (pairs plot)
+
+# Select the columns of interest
+columns_of_interest <- c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle", "avg_pct_offense")
+
+# Create the pairs plot
+pairs_plot <- ggpairs(merged_avg_imputed[, columns_of_interest])
+
+# Print the pairs plot
+print(pairs_plot)
+
+
+
+## Split the data into training and testing sets
+
+set.seed(18)  # for reproducibility
+train_indices <- sample(1:nrow(merged_avg_imputed), 0.7 * nrow(merged_avg_imputed))
+train_data <- merged_avg_imputed[train_indices, ]
+test_data <- merged_avg_imputed[-train_indices, ]
+
+## Train the Random Forest model
+
+rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = 500)
+
+rf_model
+
+## Test the model 
+
+test_predictions <- predict(rf_model, newdata = test_data)
+
+# Calculate the Mean Squared Error (MSE) as a measure of model performance
+mse <- mean((test_data$avg_pct_offense - test_predictions)^2)
+print(paste("Mean Squared Error on Test Data:", mse)) 
+
+
+# Variable importance scores
+variable_importance <- importance(rf_model)
+print(variable_importance)
+
+variable_importance_df <- data.frame(
+  variable = row.names(variable_importance),
+  importance = as.vector(variable_importance)  # Convert to a vector if necessary
+)
+
+ggplot(variable_importance_df, aes(x = reorder(variable, importance), y = importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Variable Importance",
+       x = "Variable",
+       y = "Importance") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+Figure for presentation: correlations between each variable and average offensive percentage
+
+```{r}
+
+# Compute correlations between columns and avg_pct_offense
+correlations <- cor(merged_avg_imputed[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")], merged_avg_imputed$avg_pct_offense)
+
+# Create a data frame for plotting
+cor_data <- data.frame(Column = colnames(merged_avg_imputed[, c("ht", "wt", "forty", "bench", "vertical", "broad_jump", "cone", "shuttle")]), Correlation = correlations)
+
+# Create the bar plot using ggplot2
+ggplot(data = cor_data, aes(x = Column, y = Correlation)) +
+  geom_bar(stat = "identity", fill = "#FA4E13") +
+  labs(x= "",
+       y = "Correlation with Offensive Percentage") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_discrete(labels = c(
+    ht = "Height",
+    wt = "Weight",
+    forty = "40-Yard Dash",
+    bench = "Bench Press",
+    vertical = "Vertical Jump",
+    broad_jump = "Broad Jump",
+    cone = "Cone Drill",
+    shuttle = "Shuttle Run"
+  ))
+
+```
+
+
+
+##### Without Imputation
+
+```{r}
+
+## Split the data into training and testing sets
+
+set.seed(18)  # for reproducibility
+train_indices_2 <- sample(1:nrow(non_imputed_data), 0.7 * nrow(non_imputed_data))
+train_data_2 <- non_imputed_data[train_indices_2, ]
+test_data_2 <- non_imputed_data[-train_indices_2, ]
+
+## Train the Random Forest model
+
+rf_model_2 <- randomForest(avg_pct_offense ~ ., data =train_data_2, ntree = 500)
+
+rf_model_2
+
+## Test the model 
+
+test_predictions_2 <- predict(rf_model_2, newdata = test_data_2)
+
+# Calculate the Mean Squared Error (MSE) as a measure of model performance
+mse <- mean((test_data_2$avg_pct_offense - test_predictions_2)^2)
+print(paste("Mean Squared Error on Test Data:", mse)) 
+
+```
+
