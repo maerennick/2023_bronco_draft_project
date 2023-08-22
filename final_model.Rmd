@@ -17,19 +17,20 @@ editor_options:
 ```{r setup, include=TRUE, warning= FALSE, message= FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning= FALSE, message= FALSE)
 
-library(tidyverse)
-library(randomForest)
-library(tidyverse)
-library(janitor)
-library(nflreadr)
-library(mice)
-library(cluster)
-library(dendextend)
-library(kableExtra)
-library(fmsb)
-library(corrplot)
-library(GGally)
-library(FactoMineR)
+## Load in packages
+
+library(tidyverse)# data manipulation 
+library(randomForest) # random forest model
+library(janitor) #clean data
+library(nflreadr) # nfl data
+library(mice) #imputation
+library(cluster) #clusters
+library(dendextend) #dendrogram plots
+library(kableExtra) # tables
+library(fmsb) #radar plots
+library(corrplot) #correlation plots
+library(GGally) #ggplot extension
+library(FactoMineR) # multivariate exploratory data analysis
 
 ```
 
@@ -60,12 +61,12 @@ This investigation focuses on the correlation between athletic attributes of pla
 #### Import
 
 ```{r}
-nfl_combine <- nflreadr::load_combine()
+nfl_combine <- nflreadr::load_combine() # read in NFL combine data
 
-nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>% 
-  filter(position== "WR") %>% 
-  filter(pfr_player_id!="NA") %>% 
-  rename(pfr_id = pfr_player_id)
+nfl_snap_counts <- nflreadr::load_snap_counts(seasons = 2012:2022) %>%  # read in NFL snap count data
+  filter(position== "WR") %>% # only include wide receivers
+  filter(pfr_player_id!="NA") %>% # filter out players without a player id 
+  rename(pfr_id = pfr_player_id) # rename column to pfr_id
 ```
 
 #### Cleaning
@@ -77,31 +78,33 @@ convert_height_to_decimal <- function(ht) {
   inches <- as.numeric(components[2])
   decimal_feet <- feet + inches / 12
   return(decimal_feet)
-}
+} # function to make the height column numeric 
 
-nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal)
+nfl_combine$decimal_height <- sapply(nfl_combine$ht, convert_height_to_decimal) # apply function to dataset
 
 features <- c("pos", "decimal_height", "wt", "forty", "vertical", "bench", "broad_jump", "cone", "shuttle", "season", "pfr_id") ## relevant features for model training
 
 wr_combine_data <- nfl_combine %>%
-  select(features) %>%  ## only include relevant features
-  rename(ht= decimal_height) %>% 
-  filter(pos== "WR") %>% 
-  filter(pfr_id!="NA")
+  select(features) %>%  # only include relevant features for model
+  rename(ht= decimal_height) %>% # change the name of the column
+  filter(pos== "WR") %>% # only include wide receivers
+  filter(pfr_id!="NA") # filter out rows that do not have a player id associated 
 
 nfl_pct_offense_avg_season<- nfl_snap_counts %>% 
   group_by(pfr_id, season) %>% 
-  summarise(avg_pct_offense = mean(offense_pct)) 
+  summarise(avg_pct_offense = mean(offense_pct)) # average offensive percentage per player per season
 
 nfl_pct_offense_avg<- nfl_snap_counts %>% 
   group_by(pfr_id) %>% 
-  summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) 
+  summarise(season= mean(season), avg_pct_offense = mean(offense_pct)) # average offensive percentage per player
 
 
-merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") ## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
+merged_all <- left_join(wr_combine_data, nfl_snap_counts, by = "pfr_id") # merge snap count data and combine data
+
+## note: dropped 7419 rows containing pfr_ids that were not in the combine dataset
 
 
-merged_avg_season<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = "pfr_id") %>% 
+merged_avg_season<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = "pfr_id") %>% #merged combien data with average snap data per player per season
   arrange(pfr_id, season.y) %>%  # Sort the data within each group
   group_by(pfr_id) %>%
   mutate(
@@ -114,10 +117,10 @@ merged_avg_season<- left_join(wr_combine_data, nfl_pct_offense_avg_season, by = 
     )
   ) %>%
   ungroup() %>%
-  select(-season_rank)   # Remove the temporary rank column
+  select(-season_rank)# Remove the temporary rank column
 
 
-merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id")
+merged_avg<- left_join(wr_combine_data, nfl_pct_offense_avg, by = "pfr_id") # merge combine data with data that includes average offensive percetnage per player 
 
 ```
 
@@ -135,7 +138,9 @@ ggplot(merged_avg_season, aes(x=as.numeric(season_number), y= avg_pct_offense))+
   geom_smooth(color = "#FA4E13")+
   theme_minimal()
 
-### visually: it looks like players who make it to their 7th+ season are more likely to have a higher offensive_pct. This may influence model outcomes 
+### note: it looks like players who make it to their 7th+ season are more likely to have a higher offensive_pct. This may influence model outcomes 
+
+## note: see first_season_only model (in files) for model that only accounts for offensive percentage of a players first season
 
 
 ```
@@ -151,7 +156,7 @@ ggplot(merged_avg, aes(x=avg_pct_offense))+
   geom_histogram(fill = "#002144")+
   theme_minimal()
 
-## quite a few players getting a lot of playing time in their first season
+## note: several players getting a lot of playing time in their first season
 
 ```
 
@@ -168,7 +173,7 @@ ggplot(combined_seasons, aes(x=avg_pct_offense))+
   geom_histogram(fill = "#FA4E13")+
   theme_minimal()
 
-## normal-ish distribution with a slight right skew
+## note: normal-ish distribution with a slight right skew
 
 ```
 
@@ -186,17 +191,19 @@ summary <- merged_avg_2023 %>%
   summarise(total_rows = n())
 
 
-# Create a function to count non-NA values in a column
+#function to count non-NA values in a column
 count_non_na <- function(column) {
   sum(!is.na(column))
 }
 
-# Count non-NA values in each column
-column_counts <- sapply(merged_avg_2023, count_non_na)
 
-# Create a data frame for plotting
-count_df <- data.frame(Column = names(column_counts), Count = column_counts)
+column_counts <- sapply(merged_avg_2023, count_non_na) #count non-NA values in each column
 
+
+count_df <- data.frame(Column = names(column_counts), Count = column_counts) # data frame for plotting
+
+
+## participation across events for 2023 class 
 ggplot(count_df, aes(x = Column, y = Count)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   labs(x = "Columns", y = "Count", title = "Non-NA Value Counts in Columns") +
@@ -205,12 +212,12 @@ ggplot(count_df, aes(x = Column, y = Count)) +
 
 
 
-# Count non-NA values in each column
-column_counts_all <- sapply(merged_avg, count_non_na)
+column_counts_all <- sapply(merged_avg, count_non_na)# count non-NA values in each column
 
-# Create a data frame for plotting
-count_df_all <- data.frame(Column = names(column_counts_all), Count = column_counts_all)
 
+count_df_all <- data.frame(Column = names(column_counts_all), Count = column_counts_all) #data frame for plotting
+
+## participation across events for all combine participants
 ggplot(count_df_all, aes(x = Column, y = Count)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   labs(x = "Columns", y = "Count", title = "Non-NA Value Counts in Columns") +
@@ -374,28 +381,28 @@ print(pairs_plot)
 
 ### note: avg_offense_pct is poorly correlated with all of the predictor variables (0.1 was the highest)
 
-## Split the data into training and testing sets
+## split the data into training and testing sets
 
 set.seed(18)  # for reproducibility
 train_indices <- sample(1:nrow(merged_avg_imputed), 0.7 * nrow(merged_avg_imputed))
 train_data <- merged_avg_imputed[train_indices, ]
 test_data <- merged_avg_imputed[-train_indices, ]
 
-## Train the Random Forest model
+## train the Random Forest model
 
 rf_model <- randomForest(avg_pct_offense ~ ., data = train_data, ntree = 500)
 
 rf_model
 
-## Test the model 
+## test the model 
 
 test_predictions <- predict(rf_model, newdata = test_data)
 
-# Calculate the Mean Squared Error (MSE) as a measure of model performance
+# calculate the Mean Squared Error (MSE) as a measure of model performance
 mse <- mean((test_data$avg_pct_offense - test_predictions)^2)
 print(paste("Mean Squared Error on Test Data:", mse)) 
 
-# Variable importance scores
+# variable importance scores
 variable_importance <- importance(rf_model)
 print(variable_importance)
 
@@ -404,6 +411,8 @@ variable_importance_df <- data.frame(
   importance = as.vector(variable_importance)  # Convert to a vector if necessary
 )
 
+
+## variable importance visualization
 ggplot(variable_importance_df, aes(x = reorder(variable, importance), y = importance)) +
   geom_bar(stat = "identity", fill = "skyblue") +
   labs(title = "Variable Importance",
